@@ -13,10 +13,7 @@ window.CVD_CONFIG = {
   REFRESH_SECONDS: 60,      // how often to re-read the sheet
   CAMPUS_PINCODE: "560059", // postal pincode for shops listed without one (vendors log in with shop name + pincode + phone)
   CAMPUS_NAME: "RVCE",
-  // Campus Vendors API (Render web service + Render Postgres; emails through Brevo).
-  // The API serves this website too, so normally it's the same address ("").
-  // Only when the pages come from somewhere else does the site need the API's full address.
-  API_URL: location.port === "8000" ? "http://localhost:10000"                                  // python serve.py
-    : location.hostname === "campus-vendors.onrender.com" ? "https://campus-vendors-api.onrender.com" // old static site
-    : "",
+  // The server that serves this website is also its API, so it lives at the same address ("").
+  // Only `python serve.py` (port 8000) needs the local server's full address.
+  API_URL: location.port === "8000" ? "http://localhost:10000" : "",
 };
