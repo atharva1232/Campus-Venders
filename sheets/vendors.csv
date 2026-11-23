@@ -1,0 +1,14 @@
+id,name,category,emoji,status,queue,avg_serve_min,hours,phone,whatsapp,location,distance_m,note,print_bw,print_color,print_binding,pincode
+main-mingos,Main Mingos,Food,🍛,open,0,2,08:00-20:00,,,"Mingos, RVCE campus",50,,,,,560059
+mm-food,MM Food,Food,🍱,open,0,2,08:00-20:00,,,Near campus,150,,,,,560059
+cafe-mingos,Café Mingos,Snacks,☕,open,0,2,08:00-20:00,,,"Mingos, RVCE campus",50,,,,,560059
+mini-mingos,Mini Mingos,Snacks,🥪,open,0,2,08:00-20:00,,,"Mingos, RVCE campus",50,,,,,560059
+mingos-printout,Mingos Printout,Print & Xerox,🖨️,open,0,2,08:00-20:00,,,"Mingos, RVCE campus",50,,2,10,30,560059
+main-gate-printout,Main Gate Printout,Print & Xerox,📄,open,0,2,08:00-20:00,,,Main Gate,100,,2,10,30,560059
+mingos-shops,Mingos Shops,Shops,🏪,open,0,2,08:00-20:00,,,"Mingos, RVCE campus",50,,,,,560059
+main-gate-shop-1,Main Gate Shop 1,Shops,🏪,open,0,2,08:00-20:00,,,Main Gate,100,,,,,560059
+main-gate-shop-2,Main Gate Shop 2,Shops,🏪,open,0,2,08:00-20:00,,,Main Gate,100,,,,,560059
+back-gate-shop-3,Back Gate Shop 3,Shops,🏪,open,0,2,08:00-20:00,,,Back Gate,300,,,,,560059
+mingos-stationery,Mingos Stationery,Stationery,✏️,open,0,2,08:00-20:00,,,"Mingos, RVCE campus",50,,,,,560059
+back-gate-juice,Back Gate Juice Shop,Juice & Chats,🥤,open,0,2,08:00-20:00,,,Back Gate,300,,,,,560059
+back-gate-tailor,Back Gate Tailor,Tailor,🧵,open,0,2,08:00-20:00,,,Back Gate,300,,,,,560059
