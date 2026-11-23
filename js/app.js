@@ -177,7 +177,7 @@
     if (S.student()) { location.hash = afterLogin || "#/account"; afterLogin = null; return; }
     if (Auth.blocked) return blockedPage();
     if (Auth.needsProfile && login.step !== "code") { login.step = "profile"; login.email = Auth.pendingEmail || login.email; }
-    if (!Auth.enabled) return page("account", `<div class="empty big"><h2>Student login isn't set up</h2><p class="muted">Add the Supabase settings to js/config.js.</p></div>`);
+    if (!Auth.enabled) return page("account", `<div class="empty big"><h2>Student login isn't set up</h2><p class="muted">Set API_URL in js/config.js.</p></div>`);
     const note = (Auth.linkError && login.step === "email"
         ? `<div class="alert">⚠️ ${/expired|invalid/i.test(Auth.linkError) ? "That sign-in link has expired or was already used. Each link works once. Sign in below, or create the account again to get a new email." : esc(Auth.linkError)}</div>` : "")
       + (afterLogin && afterLogin !== "#/" && login.step === "email" ? `<div class="note big">Sign in to continue. You'll go straight back to where you were.</div>` : "");

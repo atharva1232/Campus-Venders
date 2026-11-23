@@ -15,28 +15,25 @@ Team: Aarush Sequeira, Atharva Patil, Akshay B, Anjney Rohit Shah · SDG 9 & SDG
 - **₹0 stack**: plain HTML/CSS/JS with no build step, plus Google Sheets as an optional free data layer
 
 ## How it's built
-- **Website** (this folder): plain HTML/CSS/JS, hosted as a Render static site at https://campus-vendors.onrender.com
-- **API** (`server/`): Node.js + Express on Render, with a Render Postgres database. It stores student accounts, shops, menus, orders, print files and feedback.
-- **Emails**: 6-digit sign-in codes are sent through Brevo from atharvap3212@gmail.com.
-- **Code**: https://github.com/atharva1232/Campus-Venders (every push to `main` redeploys both)
+One Render web service plus one database:
+- **`campus-vendors-api`** (Node.js + Express, `server/`): serves the website pages **and** the API, at https://campus-vendors-api.onrender.com
+- **`campus-vendors-db`** (Render Postgres): student accounts, shops, menus, orders, print files, feedback, warnings and blocks
+- **Emails**: 6-digit sign-in codes are sent through Brevo from atharvap3212@gmail.com
+- **Code**: https://github.com/atharva1232/Campus-Venders (every push to `main` redeploys)
 
 ## Run it on your computer
 ```bash
-# terminal 1: the API (uses a temporary in-memory database; sign-in codes appear on screen)
 cd server
 npm install
-npm start            # http://localhost:10000
-
-# terminal 2: the website
-python serve.py      # http://localhost:8000
+npm start            # open http://localhost:10000 (temporary in-memory database; sign-in codes appear on screen)
 ```
 
-### Render settings (API service `campus-vendors-api`)
+### Render settings (service `campus-vendors-api` → Environment)
 | Variable | Value |
 |---|---|
 | `DATABASE_URL` | the Postgres **Internal Database URL** |
 | `BREVO_API_KEY` | a Brevo **API key** (SMTP & API → API Keys) |
-| `SENDER_EMAIL` | `atharvap3212@gmail.com` (a verified sender in Brevo) |
+| `SENDER_EMAIL` or `BREVO_SENDER_EMAIL` | `atharvap3212@gmail.com` (a verified sender in Brevo) |
 
 ## Demo script (for the evaluation)
 1. Open the site in **two browser tabs**. Use one as the student and one as the vendor (**For vendors**, demo PIN `1234`).

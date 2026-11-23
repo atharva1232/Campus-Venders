@@ -15,7 +15,7 @@
   const GMAIL = /^[a-z0-9](?:[a-z0-9.+_-]*[a-z0-9])?@(gmail|googlemail)\.com$/i;
 
   const Auth = {
-    enabled: !!CFG.API_URL,
+    enabled: typeof CFG.API_URL === "string", // "" = the API is on this same address
     me: null,            // { id, email, name, cls, phone, strikes } of the signed-in student
     needsProfile: false, // code accepted, but name / class / phone still needed
     pendingToken: null,

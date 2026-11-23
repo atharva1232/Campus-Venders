@@ -81,8 +81,17 @@ async function needVendor(req, res) {
 function vendorOut(row) { const d = { ...row.data, id: row.id }; delete d.pincode; return d; }
 const orderOut = (row) => ({ ...row.data, id: row.id, status: row.status });
 
+/* ---------- the website itself (one service serves pages + API) ---------- */
+const path = require("path");
+const ROOT = path.join(__dirname, "..");
+const noCache = { setHeaders: (res) => res.set("Cache-Control", "no-cache") }; // always load the latest version
+// only the site's own files are public, never server/ or .git
+app.use("/css", express.static(path.join(ROOT, "css"), noCache));
+app.use("/js", express.static(path.join(ROOT, "js"), noCache));
+app.get(["/", "/index.html"], (req, res) => { res.set("Cache-Control", "no-cache"); res.sendFile(path.join(ROOT, "index.html")); });
+
 /* ---------- health ---------- */
-app.get("/", (req, res) => res.json({ ok: true, service: "campus-vendors-api", db: DB.kind }));
+app.get("/api/health", (req, res) => res.json({ ok: true, service: "campus-vendors", db: DB.kind }));
 
 /* ---------- student sign-up / sign-in ---------- */
 // 1. Email a 6-digit code. `details` (name, class, phone) are sent when creating an account.

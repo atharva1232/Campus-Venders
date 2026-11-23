@@ -1,6 +1,6 @@
 /* Sends the sign-in code through Brevo's transactional email API.
    Without BREVO_API_KEY (local development) the code is printed to the console instead. */
-const SENDER_EMAIL = process.env.SENDER_EMAIL || "atharvap3212@gmail.com";
+const SENDER_EMAIL = process.env.SENDER_EMAIL || process.env.BREVO_SENDER_EMAIL || "atharvap3212@gmail.com";
 const SENDER_NAME = process.env.SENDER_NAME || "Campus Vendors";
 
 async function sendCode(to, code) {
