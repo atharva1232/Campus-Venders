@@ -6,6 +6,12 @@
       "runtimeExecutable": "python",
       "runtimeArgs": ["serve.py", "8000"],
       "port": 8000
+    },
+    {
+      "name": "campus-vendors-api",
+      "runtimeExecutable": "node",
+      "runtimeArgs": ["server/index.js"],
+      "port": 10000
     }
   ]
 }

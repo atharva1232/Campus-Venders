@@ -40,6 +40,7 @@
   }
   const inMins = (n) => (n < 60 ? n + " min" : Math.floor(n / 60) + " hr" + (n % 60 ? " " + (n % 60) + " min" : ""));
 
+  window.toast = (m, k) => toast(m, k);
   function toast(msg, kind) {
     const t = document.createElement("div");
     t.className = "toast " + (kind || "");
@@ -248,10 +249,12 @@
     const busy = (form, on, label) => { const b = form.querySelector("button[type=submit]"); b.disabled = on; if (label) b.textContent = label; };
     const send = async () => {
       if (Date.now() - login.lastSent < 60000) { toast(`Please wait ${Math.ceil((60000 - (Date.now() - login.lastSent)) / 1000)} s before asking for another code`, "err"); return false; }
-      const r = await Auth.sendCode(login.email);
+      const details = login.mode === "create" ? { name: login.name, cls: login.cls, phone: login.phone } : null;
+      const r = await Auth.sendCode(login.email, details);
       if (r.blocked) { blockedPage(); return false; }
       if (r.error) { toast(r.error, "err"); return false; }
       login.lastSent = Date.now();
+      if (r.devCode) setTimeout(() => toast("Local test mode: your code is " + r.devCode), 1200); // only when running on this computer
       return true;
     };
     /* save name / class / phone on the account (this also makes the phone the sign-in number), then go on */
@@ -300,20 +303,12 @@
       fc.onsubmit = async (e) => {
         e.preventDefault();
         busy(fc, true, "Checking…");
-        const r = await Auth.verify(login.email, fc.code.value);
+        const details = login.mode === "create" && login.name ? { name: login.name, cls: login.cls, phone: login.phone } : null;
+        const r = await Auth.verify(login.email, fc.code.value, details);
         if (r.blocked) return blockedPage();
         if (r.error) { toast(r.error, "err"); return busy(fc, false, "Verify"); }
-        if (Auth.needsProfile && !login.name) { // details typed earlier (maybe in another tab) for this Gmail
-          const p = Auth.pendingSignup(login.email);
-          if (p) Object.assign(login, { name: p.name, cls: p.cls, phone: p.phone });
-        }
-        if (Auth.needsProfile && login.name) return finish(fc, "Verify");
-        if (login.mode === "create" && login.name) return finish(fc, "Verify");
-        if (Auth.me) { // existing account signed in with a code: keep its phone as the sign-in number
-          await Auth.setPhoneAsPassword(Auth.me.phone);
-          return goAfterLogin(`Welcome back, ${Auth.me.name.split(" ")[0]}!`);
-        }
-        login.step = "profile"; loginPage(); // signed in, but no details yet
+        if (Auth.me) return goAfterLogin(login.mode === "create" ? `Welcome, ${Auth.me.name.split(" ")[0]}! Your account is ready.` : `Welcome back, ${Auth.me.name.split(" ")[0]}!`);
+        login.step = "profile"; loginPage(); // code accepted, but we still need name / class / phone
       };
       document.getElementById("lResend").onclick = async () => { if (await send()) toast("New email sent", "ok"); };
       document.getElementById("lBack").onclick = () => { login.step = "email"; loginPage(); };
@@ -377,10 +372,10 @@
   }
 
   function footer() {
-    const src = S.state.source === "sheets" ? "Live from Google Sheets" : "Demo data (saved in this browser)";
+    const src = S.lastError ? `<span class="warn">Offline: showing the last saved shop list</span>` : "Live";
     return `<footer class="foot">
       <div>Campus Vendor Directory · Design Thinking Lab, RVCE · SDG 9 & SDG 17</div>
-      <div class="muted">${src} · <a href="#/poster">QR poster</a> · <button class="linkbtn" data-act="reset">Reset demo</button></div>
+      <div class="muted">${src} · <a href="#/poster">QR poster</a></div>
     </footer>`;
   }
 
@@ -653,15 +648,17 @@
       </div>
     `);
     document.getElementById("clearCart").onclick = () => { S.clearCart(); cartPage(); };
-    document.getElementById("checkout").onsubmit = (e) => {
+    document.getElementById("checkout").onsubmit = async (e) => {
       e.preventDefault();
       const f = new FormData(e.target);
-      const me = S.student();
-      if (!me) return needStudent();
-      const o = S.placeOrder({
-        type: "food", vendorId: v.id, items: items.map(({ name, price, qty }) => ({ name, price, qty })), total,
-        pickup: f.get("pickup"), note: String(f.get("note") || "").trim(), student: { id: me.id, name: me.name, cls: me.cls, phone: me.phone, email: me.email },
+      if (!S.student()) return needStudent();
+      const btn = e.target.querySelector("button[type=submit]");
+      btn.disabled = true; btn.textContent = "Sending to the shop…";
+      const o = await S.placeOrder({
+        type: "food", vendorId: v.id, items: items.map(({ id, qty }) => ({ id, qty })),
+        pickup: f.get("pickup"), note: String(f.get("note") || "").trim(),
       });
+      if (o.error) { btn.disabled = false; btn.textContent = `Place pre-order · ${rupee(total)}`; return toast(o.error, "err"); }
       S.clearCart();
       location.hash = "#/order/" + o.id;
     };
@@ -821,14 +818,13 @@
       const est = estimate();
       document.getElementById("psubmit").disabled = true;
       const reader = new FileReader();
-      reader.onload = () => {
-        const o = S.placeOrder({
-          type: "print", vendorId: v.id, total: est.total, pickup: f.pickup.value, note: f.note.value.trim(), student: { id: me.id, name: me.name, cls: me.cls, phone: me.phone, email: me.email },
-          items: [{ name: `${est.pages} pg × ${est.copies} · ${f.color.value === "color" ? "Colour" : "B/W"} · ${f.sides.value === "double" ? "Double" : "Single"}-sided${f.binding.value === "spiral" ? " · Spiral" : ""}`, price: est.total, qty: 1 }],
+      document.getElementById("psubmit").textContent = "Uploading…";
+      reader.onload = async () => {
+        const o = await S.placeOrder({
+          type: "print", vendorId: v.id, pickup: f.pickup.value, note: f.note.value.trim(),
           print: { fileName: file.name, size: file.size, pages: est.pages, copies: est.copies, color: f.color.value, sides: f.sides.value, binding: f.binding.value },
-        });
-        o.print.hasFile = S.saveFile(o.id, reader.result);
-        S.save();
+        }, reader.result);
+        if (o.error) { document.getElementById("psubmit").disabled = false; document.getElementById("psubmit").textContent = "Send to shop"; return toast(o.error, "err"); }
         location.hash = "#/order/" + o.id;
       };
       reader.onerror = () => { toast("Could not read the file", "err"); document.getElementById("psubmit").disabled = false; };
@@ -888,10 +884,11 @@
       stars = Number(b.dataset.star);
       form.querySelectorAll("[data-star]").forEach((x) => (x.textContent = Number(x.dataset.star) <= stars ? "★" : "☆"));
     }));
-    form.onsubmit = (e) => {
+    form.onsubmit = async (e) => {
       e.preventDefault();
       if (!stars) return toast("Tap a star rating first", "err");
-      S.rate(o.id, stars, form.comment.value.trim());
+      const r = await S.rate(o.id, stars, form.comment.value.trim());
+      if (r.error) return toast(r.error, "err");
       toast("Thanks for the feedback!");
       keepScroll = true;
       orderPage(o.id);
@@ -943,15 +940,13 @@
   }
 
   /* ---------- VENDOR DASHBOARD ---------- */
-  let vendorSession = null;
-  try { vendorSession = sessionStorage.getItem("cvd_vendor"); } catch (e) {}
+  // the signed-in shop comes from the server (S.vendorId, set by every sync)
+  const vendorSessionId = () => (S.vendorToken() ? S.vendorId : null);
 
   const DEFAULT_PINCODE = String(CFG.CAMPUS_PINCODE || "560059");
   const norm = (s) => String(s || "").toLowerCase().replace(/[^a-z0-9]/g, "");
   function loginAs(id) {
-    vendorSession = id;
     dashUi.tab = "new";
-    try { sessionStorage.setItem("cvd_vendor", id); } catch (err) {}
     location.hash = "#/dashboard/" + id;
   }
 
@@ -985,23 +980,20 @@
         </div>
       </div>
     `);
-    document.getElementById("vlogin").onsubmit = (e) => {
+    document.getElementById("vlogin").onsubmit = async (e) => {
       e.preventDefault();
       const f = e.target;
-      const v = S.state.vendors.find((x) => norm(x.name) === norm(f.shop.value));
       const pincode = f.pincode.value.replace(/\D/g, "");
       const phone = f.phone.value.replace(/\D/g, "").slice(-10);
-      if (!v) return toast("No shop with that name. Check the spelling, or open a new shop.", "err");
+      if (!f.shop.value.trim()) return toast("Enter your shop's name", "err");
       if (!/^\d{6}$/.test(pincode)) return toast("Pincode must be 6 digits", "err");
       if (!/^\d{10}$/.test(phone)) return toast("Enter the shop's 10-digit phone number", "err");
-      if (pincode !== String(v.pincode || DEFAULT_PINCODE)) return toast("Shop name, pincode and phone number don't match", "err");
-      const saved = String(v.phone || "").replace(/\D/g, "").slice(-10);
-      if (saved && saved !== phone) return toast("Shop name, pincode and phone number don't match", "err");
-      if (!saved) { // first login for a shop listed without a number: keep the number they used
-        S.updateVendor(v.id, { phone, whatsapp: v.whatsapp || "91" + phone, pincode });
-        toast("Phone number saved to your shop", "ok");
-      }
-      loginAs(v.id);
+      const btn = f.querySelector("button"); btn.disabled = true;
+      const r = await S.vendorLogin(f.shop.value.trim(), pincode, phone);
+      btn.disabled = false;
+      if (r.error) return toast(r.error, "err");
+      if (r.claimed) toast("Phone number saved to your shop", "ok");
+      loginAs(r.vendorId);
     };
   }
 
@@ -1061,7 +1053,7 @@
     const f = document.getElementById("newShop");
     document.getElementById("split").onchange = (e) => { document.getElementById("slot2").hidden = !e.target.checked; };
     document.getElementById("isPrint").onchange = (e) => { document.getElementById("printRates").hidden = !e.target.checked; };
-    f.onsubmit = (e) => {
+    f.onsubmit = async (e) => {
       e.preventDefault();
       const name = f.name.value.trim();
       if (S.state.vendors.some((v) => v.name.toLowerCase() === name.toLowerCase())) return toast("A shop with this name is already listed", "err");
@@ -1072,13 +1064,14 @@
       if (hours.length === 2 && toMin(hours[1][0]) < toMin(hours[0][1])) return toast("The second slot must start after the first one ends", "err");
       const wa = f.whatsapp.value.trim() || f.phone.value.trim();
       const m = nowMin();
-      const v = S.addVendor({
+      const v = await S.addVendor({
         name, category: f.category.value.trim(), emoji: f.emoji.value, location: f.location.value.trim(),
         distance: Math.max(0, Number(f.distance.value) || 0), phone: f.phone.value.trim(), whatsapp: "91" + wa,
         hours, pincode: f.pincode.value.trim(),
         status: hours.some(([o, c]) => m >= toMin(o) && m < toMin(c)) ? "open" : "closed",
         ...(f.isPrint.checked ? { print: { bw: Number(f.bw.value) || 0, color: Number(f.color.value) || 0, doubleSidedDiscount: 0.2, binding: Number(f.binding.value) || 0 } } : {}),
       });
+      if (v.error) return toast(v.error, "err");
       toast(`${v.name} is now listed. Add your menu next.`, "ok");
       loginAs(v.id);
     };
@@ -1087,7 +1080,7 @@
   const dashUi = { tab: "new" };
   function dashboard(id) {
     const v = S.vendor(id);
-    if (!v || vendorSession !== id) return dashLogin();
+    if (!v || vendorSessionId() !== id) return dashLogin();
     const orders = S.vendorOrders(id);
     const buckets = {
       new: orders.filter((o) => o.status === "placed"),
@@ -1180,47 +1173,53 @@
     `);
 
     const rerender = () => { keepScroll = true; dashboard(id); };
-    app.querySelectorAll("[data-status]").forEach((b) => b.onclick = () => { S.updateVendor(id, { status: b.dataset.status, queue: b.dataset.status === "closed" ? 0 : v.queue }); toast("Status: " + STATUS_LABEL[b.dataset.status]); rerender(); });
+    const cur = () => S.vendor(id) || v; // the latest copy of this shop, not the one the page was drawn with
+    app.querySelectorAll("[data-status]").forEach((b) => b.onclick = () => { S.updateVendor(id, { status: b.dataset.status, queue: b.dataset.status === "closed" ? 0 : cur().queue }); toast("Status: " + STATUS_LABEL[b.dataset.status]); rerender(); });
     app.querySelectorAll("[data-queue]").forEach((b) => b.onclick = () => {
-      const q = Math.max(0, v.queue + Number(b.dataset.queue));
-      const status = v.status === "open" && q >= 6 ? "busy" : v.status;
+      const q = Math.max(0, cur().queue + Number(b.dataset.queue));
+      const status = cur().status === "open" && q >= 6 ? "busy" : cur().status;
       S.updateVendor(id, { queue: q, status }); rerender();
     });
     document.getElementById("saveNote").onclick = () => { S.updateVendor(id, { note: document.getElementById("vnote").value.trim() }); toast("Announcement saved"); rerender(); };
     app.querySelectorAll("[data-tab]").forEach((b) => b.onclick = () => { dashUi.tab = b.dataset.tab; rerender(); });
-    app.querySelectorAll("[data-o]").forEach((b) => b.onclick = () => { S.setOrderStatus(b.dataset.o, b.dataset.s); toast("Order " + ORDER_LABEL[b.dataset.s].toLowerCase()); rerender(); });
+    app.querySelectorAll("[data-o]").forEach((b) => b.onclick = async () => {
+      b.disabled = true;
+      const r = await S.setOrderStatus(b.dataset.o, b.dataset.s);
+      if (r.error) { b.disabled = false; return toast(r.error, "err"); }
+      toast("Order " + ORDER_LABEL[b.dataset.s].toLowerCase()); rerender();
+    });
     app.querySelectorAll("[data-noshow]").forEach((b) => b.onclick = async () => {
       const o = S.state.orders.find((x) => x.id === b.dataset.noshow);
       if (!o) return;
       if (!(await ask(`Mark ${o.token} (${o.student.name}) as NOT collected? The student gets a warning the first time and is permanently blocked the second time.`, "Not collected"))) return;
       b.disabled = true;
-      const r = await Auth.reportNoShow(o, v.name);
-      if (r && r.error) { b.disabled = false; return toast("Couldn't report it: " + r.error, "err"); }
-      S.setOrderStatus(o.id, "no_show");
-      toast(r.blocked ? `${o.student.name} has been permanently blocked (2nd uncollected order)` : `${o.student.name} has been warned (1st uncollected order)`, r.blocked ? "err" : "ok");
+      const r = await S.setOrderStatus(o.id, "no_show"); // the server records the warning / block
+      if (r.error) { b.disabled = false; return toast("Couldn't report it: " + r.error, "err"); }
+      const k = r.strike || {};
+      toast(k.blocked ? `${o.student.name} has been permanently blocked (2nd uncollected order)` : `${o.student.name} has been warned (1st uncollected order)`, k.blocked ? "err" : "ok");
       rerender();
     });
-    app.querySelectorAll("[data-file]").forEach((b) => b.onclick = () => {
-      const data = S.getFile(b.dataset.file);
+    app.querySelectorAll("[data-file]").forEach((b) => b.onclick = async () => {
+      const data = await S.getFile(b.dataset.file);
       const o = S.state.orders.find((x) => x.id === b.dataset.file);
       if (!data) return toast("File not available", "err");
       const a = document.createElement("a"); a.href = data; a.download = o.print.fileName; a.click();
     });
-    app.querySelectorAll("[data-stock]").forEach((c) => c.onchange = () => { v.menu.find((m) => m.id === c.dataset.stock).inStock = c.checked; S.updateVendor(id, {}); rerender(); });
-    app.querySelectorAll("[data-price]").forEach((c) => c.onchange = () => { v.menu.find((m) => m.id === c.dataset.price).price = Math.max(0, Number(c.value) || 0); S.updateVendor(id, {}); toast("Price updated"); });
-    app.querySelectorAll("[data-del]").forEach((b) => b.onclick = async () => { if (!(await ask("Remove this item from your menu?", "Remove"))) return; v.menu = v.menu.filter((m) => m.id !== b.dataset.del); S.updateVendor(id, { menu: v.menu }); rerender(); });
+    app.querySelectorAll("[data-stock]").forEach((c) => c.onchange = () => { cur().menu.find((m) => m.id === c.dataset.stock).inStock = c.checked; S.updateVendor(id, {}); rerender(); });
+    app.querySelectorAll("[data-price]").forEach((c) => c.onchange = () => { cur().menu.find((m) => m.id === c.dataset.price).price = Math.max(0, Number(c.value) || 0); S.updateVendor(id, {}); toast("Price updated"); });
+    app.querySelectorAll("[data-del]").forEach((b) => b.onclick = async () => { if (!(await ask("Remove this item from your menu?", "Remove"))) return; cur().menu = cur().menu.filter((m) => m.id !== b.dataset.del); S.updateVendor(id, { menu: cur().menu }); rerender(); });
     app.querySelectorAll("[data-fb]").forEach((b) => b.onclick = () => {
       const r = app.querySelector(`[data-reply-in="${b.dataset.fb}"]`).value.trim();
       S.setFeedbackStatus(b.dataset.fb, "resolved", r || undefined);
       toast("Marked resolved"); rerender();
     });
     const unseen = S.vendorFeedback(id).filter((x) => x.status === "open");
-    if (unseen.length) { unseen.forEach((x) => { x.status = "seen"; }); S.save(); }
+    unseen.forEach((x) => S.setFeedbackStatus(x.id, "seen"));
     document.getElementById("addItem").onsubmit = (e) => {
       e.preventDefault();
       const f = e.target;
-      v.menu.push({ id: "x" + Date.now(), name: f.name.value.trim(), price: Math.max(0, Number(f.price.value) || 0), inStock: true, cat: f.cat.value.trim() || "Menu" });
-      S.updateVendor(id, { menu: v.menu }); toast("Item added"); rerender();
+      cur().menu.push({ id: "x" + Date.now(), name: f.name.value.trim(), price: Math.max(0, Number(f.price.value) || 0), inStock: true, cat: f.cat.value.trim() || "Menu" });
+      S.updateVendor(id, { menu: cur().menu }); toast("Item added"); rerender();
     };
   }
 
@@ -1313,7 +1312,7 @@
       document.getElementById("feedback").scrollIntoView();
     }
     f.orderId.onchange = () => { const o = f.orderId.selectedOptions[0]; if (o.dataset.v) f.vendorId.value = o.dataset.v; };
-    f.onsubmit = (e) => {
+    f.onsubmit = async (e) => {
       e.preventDefault();
       const message = f.message.value.trim();
       if (message.length < 5) return toast("Please write a little more", "err");
@@ -1323,12 +1322,9 @@
         location.hash = "#/login";
         return;
       }
-      const me = S.student();
       const order = S.myOrders().find((o) => o.id === f.orderId.value);
-      const item = S.addFeedback({
-        type: f.type.value, vendorId: f.vendorId.value || null, orderId: order ? order.id : null, token: order ? order.token : null,
-        message, studentId: me.id, name: me.name, cls: me.cls, contact: (me.phone ? me.phone + " · " : "") + me.email,
-      });
+      const item = await S.addFeedback({ type: f.type.value, vendorId: f.vendorId.value || null, orderId: order ? order.id : null, message });
+      if (item.error) return toast(item.error, "err");
       fbDraft = null;
       toast(`Sent. Your reference is ${item.ref}`, "ok");
       keepScroll = true;
@@ -1368,7 +1364,7 @@
       case "print": return printPage(b);
       case "orders": return ordersPage(b);
       case "order": return orderPage(b);
-      case "dashboard": return b === "new" ? registerShop() : b ? dashboard(b) : vendorSession && S.vendor(vendorSession) ? (location.hash = "#/dashboard/" + vendorSession) : dashLogin();
+      case "dashboard": return b === "new" ? registerShop() : b ? dashboard(b) : vendorSessionId() && S.vendor(vendorSessionId()) ? (location.hash = "#/dashboard/" + vendorSessionId()) : dashLogin();
       case "about": return about();
       case "login": return loginPage();
       case "blocked": return Auth.blocked ? blockedPage() : loginPage();
@@ -1385,8 +1381,7 @@
     const cat = e.target.closest("[data-cat]");
     if (cat) { ui.cat = cat.dataset.cat; document.querySelectorAll("[data-cat]").forEach((c) => c.classList.toggle("on", c === cat)); renderGrid(); return; }
     const act = e.target.closest("[data-act]");
-    if (act && act.dataset.act === "reset") { ask("Reset all demo data (orders, statuses, menus)?", "Reset").then((ok) => { if (ok) { S.reset(); toast("Demo data reset"); route(); } }); }
-    if (act && act.dataset.act === "logout") { vendorSession = null; try { sessionStorage.removeItem("cvd_vendor"); } catch (err) {} location.hash = "#/dashboard"; }
+    if (act && act.dataset.act === "logout") { S.vendorLogout().then(() => { location.hash = "#/dashboard"; route(); }); }
   });
   document.addEventListener("keydown", (e) => {
     const card = e.target.closest && e.target.closest("[data-href]");
@@ -1396,9 +1391,9 @@
   /* live updates from other tabs (student ↔ vendor) */
   function statusSnapshot() { return Object.fromEntries(S.myOrders().map((o) => [o.id, o.status])); }
   let lastMine = {};
-  function liveRefresh() {
+  async function liveRefresh() {
     const before = lastMine;
-    S.load();
+    const changed = await S.sync();
     lastMine = statusSnapshot();
     let strike = false;
     Object.entries(lastMine).forEach(([id, st]) => {
@@ -1411,11 +1406,19 @@
     });
     // a shop just reported an uncollected order: re-check this student's warning / block status
     if (strike) Auth.refresh().then(() => { keepScroll = true; route(); }).catch(() => {});
+    if (!changed) return;
     const active = document.activeElement;
     const typing = active && /INPUT|TEXTAREA|SELECT/.test(active.tagName) && active.type !== "checkbox";
     if (!typing) { keepScroll = true; route(); } else if (document.getElementById("grid")) renderGrid();
   }
-  window.addEventListener("storage", (e) => { if (!e.key || e.key.startsWith("cvd_state")) liveRefresh(); });
+  // every 5 s while the page is visible: shop status, new orders, order progress
+  let polling = false;
+  setInterval(async () => {
+    if (document.hidden || polling) return;
+    polling = true;
+    try { await liveRefresh(); } finally { polling = false; }
+  }, 5000);
+  document.addEventListener("visibilitychange", () => { if (!document.hidden) liveRefresh(); });
   window.addEventListener("hashchange", route);
 
   /* refresh relative times every minute */
@@ -1429,7 +1432,8 @@
     if (Auth.blocked && !blockShown) { blockShown = true; location.hash = "#/blocked"; return; }
     keepScroll = true; route();
   });
-  Auth.init().finally(() => {
+  if (S.state.vendors.length) route(); // last saved shop list, while the server answers
+  Promise.all([Auth.init(), S.sync()]).catch(() => {}).finally(() => {
     lastMine = statusSnapshot();
     if (Auth.blocked) { blockShown = true; history.replaceState(null, "", "#/blocked"); }
     else if (Auth.linkError) history.replaceState(null, "", "#/login"); // the login page explains it
@@ -1440,10 +1444,4 @@
     route();
   });
 
-  async function sheets() {
-    try {
-      if (await window.syncFromSheets()) { lastMine = statusSnapshot(); if (document.getElementById("grid")) renderGrid(); }
-    } catch (e) { console.warn("Sheets sync failed, using saved data:", e.message); }
-  }
-  if (CFG.SHEET_VENDORS_CSV) { sheets(); setInterval(sheets, Math.max(15, CFG.REFRESH_SECONDS || 60) * 1000); }
 })();

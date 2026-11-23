@@ -13,7 +13,9 @@ window.CVD_CONFIG = {
   REFRESH_SECONDS: 60,      // how often to re-read the sheet
   CAMPUS_PINCODE: "560059", // postal pincode for shops listed without one (vendors log in with shop name + pincode + phone)
   CAMPUS_NAME: "RVCE",
-  // Student login (Gmail + emailed code). Public publishable key: safe to ship in the page.
-  SUPABASE_URL: "https://lfwnnuhplzafpoqibemd.supabase.co",
-  SUPABASE_KEY: "sb_publishable_SOLBGNpna_GKNIx5c6CUFA_rl6qZHaL",
+  // Campus Vendors API (Render web service + Render Postgres; emails through Brevo).
+  // On this computer the site talks to a local API on port 10000 (run: cd server && npm start).
+  API_URL: /^(localhost|127\.0\.0\.1)$/.test(location.hostname)
+    ? "http://localhost:10000"
+    : "https://campus-vendors-api.onrender.com",
 };

@@ -1,173 +1,118 @@
-/* Student accounts: Gmail + emailed verification code (Supabase Auth),
-   plus the "not collected" strikes: 1st = warning, 2nd = permanent block. */
+/* Student accounts on the Campus Vendors API.
+   New student: name, class, phone, Gmail → 6-digit code emailed through Brevo → account created.
+   Returning student: Gmail + phone number.
+   Uncollected orders: 1st = warning, 2nd = permanent block (checked by the server). */
 (function () {
   const CFG = window.CVD_CONFIG || {};
-  // Read this before supabase-js tidies the address bar: a sign-in link from the email lands here as
-  // #access_token=…  (worked)  or  #error=…&error_description=…  (expired / already used).
-  const landing = new URLSearchParams(String(location.hash || "").replace(/^#\/?/, ""));
-  const fromLink = landing.has("access_token");
-  const linkError = landing.get("error_description");
-  const PENDING_KEY = "cvd_pending_signup"; // details typed before the email was sent (the link may open in a new tab)
-  const sb = window.supabase && CFG.SUPABASE_URL && CFG.SUPABASE_KEY
-    ? window.supabase.createClient(CFG.SUPABASE_URL, CFG.SUPABASE_KEY)
-    : null;
+  const TOKEN_KEY = "cvd_student_token";
+  const PENDING_KEY = "cvd_pending_signup";
   const listeners = new Set();
   const emit = () => listeners.forEach((fn) => fn());
+  const get = (k) => { try { return localStorage.getItem(k); } catch (e) { return null; } };
+  const set = (k, v) => { try { v == null ? localStorage.removeItem(k) : localStorage.setItem(k, v); } catch (e) {} };
+  const api = (...a) => window.Store.api(...a);
 
   const GMAIL = /^[a-z0-9](?:[a-z0-9.+_-]*[a-z0-9])?@(gmail|googlemail)\.com$/i;
 
   const Auth = {
-    enabled: !!sb,
-    me: null,          // { id, email, name, cls, phone, strikes } of the signed-in student
-    needsProfile: false, // signed in, but has not entered name and class yet
-    blocked: false,    // this browser just hit a blocked account
-    noShows: [],       // the student's uncollected orders
-    lastError: null,
-    fromLink: false,   // this page load came from clicking the sign-in link in the email
-    linkError: linkError ? linkError.replace(/\+/g, " ") : null,
+    enabled: !!CFG.API_URL,
+    me: null,            // { id, email, name, cls, phone, strikes } of the signed-in student
+    needsProfile: false, // code accepted, but name / class / phone still needed
+    pendingToken: null,
+    pendingEmail: null,
+    blocked: false,      // this browser just hit a blocked account
+    noShows: [],         // the student's uncollected orders
+    fromLink: false,     // (codes only now; kept so older page code keeps working)
+    linkError: null,
 
     onChange(fn) { listeners.add(fn); },
     isGmail(e) { return GMAIL.test(String(e || "").trim()); },
+    token() { return get(TOKEN_KEY); },
 
-    rememberSignup(details) { try { localStorage.setItem(PENDING_KEY, JSON.stringify({ ...details, at: Date.now() })); } catch (e) {} },
+    rememberSignup(details) { set(PENDING_KEY, JSON.stringify({ ...details, at: Date.now() })); },
     pendingSignup(email) {
       try {
-        const p = JSON.parse(localStorage.getItem(PENDING_KEY) || "null");
-        // only for the same Gmail, and only for a day
+        const p = JSON.parse(get(PENDING_KEY) || "null");
         if (p && p.email === String(email || "").toLowerCase() && Date.now() - p.at < 864e5) return p;
       } catch (e) {}
       return null;
     },
-    forgetSignup() { try { localStorage.removeItem(PENDING_KEY); } catch (e) {} },
+    forgetSignup() { set(PENDING_KEY, null); },
 
-    async init() {
-      if (!sb) return;
-      try {
-        const { data } = await sb.auth.getSession();
-        if (data.session) await this.refresh();
-        if (data.session && fromLink && !this.blocked) await this.finishLinkSignIn(data.session.user.email);
-      } catch (e) { this.lastError = e.message; console.warn("Auth init failed:", e); }
-      // other tabs signing out (supabase-js syncs the session through storage)
-      sb.auth.onAuthStateChange((event) => {
-        if (event === "SIGNED_OUT" && (this.me || this.needsProfile)) { this.me = null; this.needsProfile = false; emit(); }
-      });
-    },
+    async init() { if (this.token()) await this.refresh(); },
 
-    /* Re-read the student's row. Signs out and flags `blocked` if the account is blocked. */
+    /* re-read the signed-in student (and warnings) from the server */
     async refresh() {
-      if (!sb) return null;
-      const { data: u } = await sb.auth.getUser();
-      if (!u || !u.user) { this.me = null; this.needsProfile = false; return null; }
-      const { data: row, error } = await sb.from("students").select("id,email,name,cls,phone,strikes,blocked").eq("id", u.user.id).maybeSingle();
-      if (error) throw error;
-      if (!row) {
-        const { data: isBlocked } = await sb.rpc("email_blocked", { p_email: u.user.email });
-        if (isBlocked) return this.block();
-        this.me = null; this.needsProfile = true; this.pendingEmail = u.user.email;
-        return null;
-      }
-      if (row.blocked) return this.block();
-      this.me = row; this.needsProfile = false; this.blocked = false;
-      const { data: ns } = await sb.from("no_shows").select("order_id,token,shop,at").order("at", { ascending: false });
-      this.noShows = ns || [];
-      return row;
+      if (!this.token()) { this.me = null; return null; }
+      const d = await api("GET", "/api/me");
+      if (d.blocked) return this.block();
+      if (d.error) { if (d.status === 401) { set(TOKEN_KEY, null); this.me = null; } return null; }
+      this.me = d.student; this.noShows = d.noShows || []; this.blocked = false;
+      return this.me;
     },
-
-    async block() {
+    /* called with every /api/sync result */
+    applySync(d) {
+      if (d.blocked) { this.block(); return; }
+      if (d.me) { this.me = d.me; this.noShows = d.noShows || []; }
+      else if (this.me && this.token()) { this.me = null; set(TOKEN_KEY, null); emit(); } // session ended on the server
+    },
+    block() {
       const wasIn = !!this.me;
       this.me = null; this.needsProfile = false; this.blocked = true;
-      try { await sb.auth.signOut(); } catch (e) {}
+      set(TOKEN_KEY, null);
       if (wasIn) emit(); // only a student blocked mid-session needs the page swapped out
       return null;
     },
+    signedIn(d) {
+      set(TOKEN_KEY, d.token);
+      this.me = d.student; this.needsProfile = false; this.pendingToken = null; this.blocked = false;
+    },
 
-    /* Step 1: email a code. Returns { ok } or { error, blocked }. */
-    async sendCode(email) {
-      if (!sb) return { error: "Login isn't set up yet (missing Supabase settings in js/config.js)." };
-      email = email.trim().toLowerCase();
+    /* step 1: email a code. `details` = { name, cls, phone } when creating an account */
+    async sendCode(email, details) {
       if (!this.isGmail(email)) return { error: "Please use a Gmail address (ending in @gmail.com)." };
-      const { data: isBlocked, error: bErr } = await sb.rpc("email_blocked", { p_email: email });
-      if (bErr) return { error: "Couldn't reach the login server. Check your internet and try again." };
-      if (isBlocked) { this.blocked = true; return { error: "This Gmail account has been permanently blocked.", blocked: true }; }
-      // if the email holds a link instead of a code, the link brings the student back to this page
-      const back = location.origin + location.pathname;
-      const { error } = await sb.auth.signInWithOtp({ email, options: { shouldCreateUser: true, emailRedirectTo: back } });
-      if (error) {
-        const m = /rate|seconds|too many/i.test(error.message) ? "Too many codes requested. Please wait a minute and try again." : error.message;
-        return { error: m };
-      }
-      return { ok: true };
+      const d = await api("POST", "/api/auth/send-code", { email: email.trim().toLowerCase(), details: details || undefined });
+      if (d.blocked) { this.blocked = true; return { error: d.error, blocked: true }; }
+      if (d.error) return { error: d.error };
+      return { ok: true, devCode: d.devCode };
     },
-
-    /* Step 2: check the code. Returns { ok, needsProfile } or { error, blocked }. */
-    async verify(email, code) {
-      const { error } = await sb.auth.verifyOtp({ email: email.trim().toLowerCase(), token: code.trim(), type: "email" });
-      if (error) return { error: /expired|invalid/i.test(error.message) ? "That code is wrong or has expired. Check the latest email or send a new code." : error.message };
+    /* step 2: check the code */
+    async verify(email, code, details) {
+      const d = await api("POST", "/api/auth/verify", { email: email.trim().toLowerCase(), code, details: details || undefined });
+      if (d.blocked) { this.blocked = true; return { error: d.error, blocked: true }; }
+      if (d.error) return { error: d.error };
+      if (d.needsProfile) { this.needsProfile = true; this.pendingToken = d.pendingToken; this.pendingEmail = d.email; return { ok: true, needsProfile: true }; }
+      this.signedIn(d);
       await this.refresh();
-      if (this.blocked) return { error: "This Gmail account has been permanently blocked.", blocked: true };
-      return { ok: true, needsProfile: this.needsProfile }; // the login page redraws itself
+      return { ok: true, needsProfile: false };
     },
-
-    /* Save name, class and phone (after the code is verified, and from the account page). */
+    /* name / class / phone: finishes a new account, or updates the signed-in one */
     async saveProfile(name, cls, phone) {
-      const { error } = await sb.rpc("save_profile", { p_name: name, p_cls: cls, p_phone: phone });
-      if (error) {
-        if (/blocked/.test(error.message)) { await this.block(); return { error: "This Gmail account has been permanently blocked.", blocked: true }; }
-        if (/duplicate|unique/i.test(error.message)) return { error: "This Gmail inbox already has an account (maybe written with dots or a +tag)." };
-        return { error: error.message };
-      }
+      const d = this.needsProfile && this.pendingToken
+        ? await api("POST", "/api/auth/finish", { pendingToken: this.pendingToken, name, cls, phone })
+        : await api("PUT", "/api/me", { cls, phone });
+      if (d.blocked) { this.block(); return { error: d.error, blocked: true }; }
+      if (d.error) return { error: d.error };
+      if (d.token) this.signedIn(d); else this.me = d.student;
       await this.refresh();
-      await this.setPhoneAsPassword(phone);
       return { ok: true };
     },
+    async setPhoneAsPassword() { /* the server signs students in with Gmail + phone directly */ },
 
-    /* Signed in by clicking the email link: finish a new account with the details typed earlier,
-       and make sure the phone number works for the next sign-in. */
-    async finishLinkSignIn(email) {
-      this.fromLink = true;
-      const p = this.pendingSignup(email);
-      if (this.needsProfile && p) await this.saveProfile(p.name, p.cls, p.phone);
-      else if (this.me && this.me.phone) await this.setPhoneAsPassword(this.me.phone);
-      if (this.me) this.forgetSignup();
-    },
-
-    /* The phone number is the account's sign-in secret (Supabase stores it hashed, like a password). */
-    async setPhoneAsPassword(phone) {
-      const { error } = await sb.auth.updateUser({ password: phone });
-      // "should be different from the old password" just means it's already set
-      if (error && !/different|same/i.test(error.message)) console.warn("Could not set the sign-in phone:", error.message);
-    },
-
-    /* Returning students: Gmail + phone number, no code. Returns { ok } or { error, blocked, noAccount }. */
+    /* returning students: Gmail + phone number, no code */
     async signIn(email, phone) {
-      if (!sb) return { error: "Login isn't set up yet (missing Supabase settings in js/config.js)." };
-      email = email.trim().toLowerCase();
       if (!this.isGmail(email)) return { error: "Please use a Gmail address (ending in @gmail.com)." };
-      const { data: isBlocked, error: bErr } = await sb.rpc("email_blocked", { p_email: email });
-      if (bErr) return { error: "Couldn't reach the login server. Check your internet and try again." };
-      if (isBlocked) { this.blocked = true; return { error: "This Gmail account has been permanently blocked.", blocked: true }; }
-      const { error } = await sb.auth.signInWithPassword({ email, password: phone });
-      if (error) {
-        if (/invalid|credentials/i.test(error.message)) return { error: "That Gmail and phone number don't match an account. New here? Create an account instead.", noAccount: true };
-        if (/confirm/i.test(error.message)) return { error: "This account was never finished. Create the account again to get a new code." };
-        if (/rate|too many/i.test(error.message)) return { error: "Too many tries. Please wait a minute and try again." };
-        return { error: error.message };
-      }
+      const d = await api("POST", "/api/auth/signin", { email: email.trim().toLowerCase(), phone });
+      if (d.blocked) { this.blocked = true; return { error: d.error, blocked: true }; }
+      if (d.error) return { error: d.error, noAccount: d.status === 401 };
+      this.signedIn(d);
       await this.refresh();
-      if (this.blocked) return { error: "This Gmail account has been permanently blocked.", blocked: true };
-      return { ok: true, needsProfile: this.needsProfile };
+      return { ok: true, needsProfile: false };
     },
-
     async logout() {
-      this.me = null; this.needsProfile = false;
-      if (sb) await sb.auth.signOut();
-    },
-
-    /* Called from the vendor dashboard when a ready order is never picked up. */
-    async reportNoShow(order, shopName) {
-      if (!sb || !order.student || !order.student.id) return { error: "This order has no student account attached." };
-      const { data, error } = await sb.rpc("report_no_show", { p_student: order.student.id, p_order: order.id, p_token: order.token, p_shop: shopName });
-      return error ? { error: error.message } : data;
+      if (this.token()) await api("POST", "/api/auth/logout");
+      set(TOKEN_KEY, null);
+      this.me = null; this.needsProfile = false; this.pendingToken = null;
     },
   };
 
