@@ -1,131 +1,77 @@
-/* Database: Render Postgres in production (DATABASE_URL), or an in-memory
-   Postgres (PGlite) for local development and tests. Both expose
-   query(sql, params) -> { rows }. */
+/* Database: MongoDB.
+   On Render: MongoDB Atlas (free M0), connected with the MONGODB_URI environment variable.
+   On your computer without MONGODB_URI: a temporary in-memory MongoDB (wiped when the server stops). */
 const fs = require("fs");
 const path = require("path");
 const vm = require("vm");
+const { MongoClient } = require("mongodb");
 
-let db;
+const col = {}; // students, blockedEmails, loginCodes, sessions, vendors, orders, printFiles, noShows, feedback, counters
+let kind = "";
 
 async function connect() {
-  if (process.env.DATABASE_URL) {
-    const { Pool } = require("pg");
-    const pool = new Pool({
-      connectionString: process.env.DATABASE_URL,
-      // Render's external URLs need TLS; its internal URL works either way
-      ssl: /render\.com/.test(process.env.DATABASE_URL) ? { rejectUnauthorized: false } : undefined,
-      max: 5,
-    });
-    db = { query: (sql, params) => pool.query(sql, params), kind: "postgres" };
-  } else {
+  let uri = process.env.MONGODB_URI;
+  if (!uri) {
     if (process.env.RENDER) {
-      // on Render, never fall back to a throwaway in-memory database
-      throw new Error("DATABASE_URL is not set. In Render: campus-vendors-api → Environment → add DATABASE_URL = the Postgres 'Internal Database URL'.");
+      // on Render, never fall back to a throwaway database
+      throw new Error("MONGODB_URI is not set. In Render: your service → Environment → add MONGODB_URI = the MongoDB Atlas connection string.");
     }
-    const { PGlite } = require("@electric-sql/pglite");
-    const lite = new PGlite(); // in memory: wiped when the server stops
-    db = { query: (sql, params) => lite.query(sql, params), exec: (sql) => lite.exec(sql), kind: "pglite (in-memory)" };
-  }
-  await migrate();
+    const { MongoMemoryServer } = require("mongodb-memory-server");
+    // MongoDB has no Windows-on-ARM build; Windows runs the x64 one through emulation
+    const arch = process.platform === "win32" && process.arch === "arm64" ? "x64" : undefined;
+    const mem = await MongoMemoryServer.create(arch ? { binary: { arch } } : undefined);
+    uri = mem.getUri();
+    kind = "in-memory MongoDB (temporary)";
+  } else kind = "MongoDB Atlas";
+
+  const client = new MongoClient(uri, { serverSelectionTimeoutMS: 15000 });
+  await client.connect();
+  const db = client.db(process.env.MONGODB_DB || "campus_vendors");
+  for (const [k, name] of Object.entries({
+    students: "students", blockedEmails: "blocked_emails", loginCodes: "login_codes", sessions: "sessions",
+    vendors: "vendors", orders: "orders", printFiles: "print_files", noShows: "no_shows", feedback: "feedback", counters: "counters",
+  })) col[k] = db.collection(name);
+
+  await col.students.createIndex({ email: 1 }, { unique: true });
+  await col.vendors.createIndex({ nameKey: 1 }, { unique: true });
+  await col.orders.createIndex({ vendorId: 1, createdAt: -1 });
+  await col.orders.createIndex({ studentId: 1, createdAt: -1 });
+  await col.noShows.createIndex({ studentId: 1 });
+  await col.feedback.createIndex({ vendorId: 1 });
+  await col.feedback.createIndex({ studentId: 1 });
+  // MongoDB deletes expired codes and sessions by itself
+  await col.loginCodes.createIndex({ expiresAt: 1 }, { expireAfterSeconds: 0 });
+  await col.sessions.createIndex({ expiresAt: 1 }, { expireAfterSeconds: 0 });
+
   await seed();
-  return db;
+  return col;
 }
 
-const query = (sql, params) => db.query(sql, params || []);
-
-async function migrate() {
-  const statements = [
-    `create table if not exists students (
-      id bigserial primary key,
-      email text not null unique,              -- canonical Gmail (lowercase, no dots / +tags)
-      name text not null,
-      cls text not null,
-      phone text not null,                     -- shown to shops, and used to sign in with the Gmail
-      strikes int not null default 0,          -- uncollected orders
-      blocked boolean not null default false,
-      created_at timestamptz not null default now()
-    )`,
-    `create table if not exists blocked_emails (
-      email text primary key, reason text, blocked_at timestamptz not null default now()
-    )`,
-    `create table if not exists login_codes (
-      email text primary key,                  -- canonical Gmail
-      code_hash text not null,
-      details jsonb,                           -- name / class / phone typed when creating an account
-      attempts int not null default 0,
-      sent_at timestamptz not null default now(),
-      expires_at timestamptz not null
-    )`,
-    `create table if not exists sessions (
-      token_hash text primary key,
-      kind text not null,                      -- 'student' or 'vendor'
-      subject text not null,                   -- student id or vendor id
-      created_at timestamptz not null default now(),
-      expires_at timestamptz not null
-    )`,
-    `create table if not exists vendors (
-      id text primary key,
-      data jsonb not null,                     -- everything the website shows (menu, hours, status, ...)
-      name_key text not null,                  -- name for vendor login matching
-      pincode text not null,
-      phone text not null default '',
-      created_at timestamptz not null default now(),
-      updated_at timestamptz not null default now()
-    )`,
-    `create sequence if not exists order_token_seq start 101`,
-    `create table if not exists orders (
-      id text primary key,
-      vendor_id text not null references vendors(id) on delete cascade,
-      student_id bigint not null references students(id) on delete cascade,
-      status text not null,
-      data jsonb not null,
-      created_at timestamptz not null default now(),
-      updated_at timestamptz not null default now()
-    )`,
-    `create index if not exists orders_vendor_idx on orders(vendor_id, created_at desc)`,
-    `create index if not exists orders_student_idx on orders(student_id, created_at desc)`,
-    `create table if not exists print_files (
-      order_id text primary key references orders(id) on delete cascade,
-      data_url text not null
-    )`,
-    `create table if not exists no_shows (
-      order_id text primary key,
-      student_id bigint not null references students(id) on delete cascade,
-      token text, shop text, at timestamptz not null default now()
-    )`,
-    `create sequence if not exists feedback_ref_seq start 1001`,
-    `create table if not exists feedback (
-      id text primary key,
-      vendor_id text,
-      student_id bigint references students(id) on delete set null,
-      status text not null default 'open',
-      data jsonb not null,
-      created_at timestamptz not null default now()
-    )`,
-  ];
-  for (const s of statements) await query(s);
-}
-
-/* Load the shop list from the website's own js/data.js (one source of truth),
-   and add any shop that isn't in the database yet. */
-function seedVendors() {
-  const file = path.join(__dirname, "..", "js", "data.js");
-  const sandbox = { window: { SEED_VENDORS: [] } };
-  vm.runInNewContext(fs.readFileSync(file, "utf8"), sandbox);
-  return sandbox.window.SEED_VENDORS;
+/* next number in a running sequence (order tokens, feedback references) */
+async function nextSeq(name, start) {
+  const r = await col.counters.findOneAndUpdate(
+    { _id: name },
+    { $inc: { seq: 1 } },
+    { upsert: true, returnDocument: "after" }
+  );
+  return start - 1 + r.seq;
 }
 
 const nameKey = (n) => String(n || "").toLowerCase().replace(/[^a-z0-9]/g, "");
 
+/* Load the shop list from the website's own js/data.js (one source of truth),
+   and add any shop that isn't in the database yet. */
 async function seed() {
-  const shops = seedVendors();
-  for (const v of shops) {
-    const data = { ...v, ratings: [], updatedAt: Date.now() };
-    await query(
-      `insert into vendors (id, data, name_key, pincode, phone) values ($1, $2, $3, $4, $5) on conflict (id) do nothing`,
-      [v.id, JSON.stringify(data), nameKey(v.name), String(v.pincode || "560059"), String(v.phone || "")]
+  const sandbox = { window: { SEED_VENDORS: [] } };
+  vm.runInNewContext(fs.readFileSync(path.join(__dirname, "..", "js", "data.js"), "utf8"), sandbox);
+  for (const v of sandbox.window.SEED_VENDORS) {
+    await col.vendors.updateOne(
+      { _id: v.id },
+      { $setOnInsert: { _id: v.id, nameKey: nameKey(v.name), pincode: String(v.pincode || "560059"), phone: String(v.phone || ""),
+        data: { ...v, ratings: [], updatedAt: Date.now() }, createdAt: new Date() } },
+      { upsert: true }
     );
   }
 }
 
-module.exports = { connect, query, nameKey, get kind() { return db && db.kind; } };
+module.exports = { connect, col, nextSeq, nameKey, get kind() { return kind; } };

@@ -15,25 +15,34 @@ Team: Aarush Sequeira, Atharva Patil, Akshay B, Anjney Rohit Shah · SDG 9 & SDG
 - **₹0 stack**: plain HTML/CSS/JS with no build step, plus Google Sheets as an optional free data layer
 
 ## How it's built
-One Render web service plus one database:
-- **`campus-vendors-api`** (Node.js + Express, `server/`): serves the website pages **and** the API, at https://campus-vendors-api.onrender.com
-- **`campus-vendors-db`** (Render Postgres): student accounts, shops, menus, orders, print files, feedback, warnings and blocks
-- **Emails**: 6-digit sign-in codes are sent through Brevo from atharvap3212@gmail.com
+**One Render web service** does everything: it serves the website pages and the API (`server/`, Node.js + Express).
+Everything it connects to is set with environment variables on that service:
+- **Data**: MongoDB Atlas, free M0 cluster (student accounts, shops, menus, orders, print files, feedback, warnings, blocks)
+- **Emails**: 6-digit sign-in codes sent through Brevo from atharvap3212@gmail.com
 - **Code**: https://github.com/atharva1232/Campus-Venders (every push to `main` redeploys)
 
 ## Run it on your computer
 ```bash
 cd server
 npm install
-npm start            # open http://localhost:10000 (temporary in-memory database; sign-in codes appear on screen)
+npm start     # open http://localhost:10000
 ```
+Without `MONGODB_URI` it uses a temporary in-memory MongoDB (downloaded once, ~600 MB), and sign-in codes appear on screen instead of being emailed.
 
-### Render settings (service `campus-vendors-api` → Environment)
-| Variable | Value |
+### Render service settings
+| Setting | Value |
 |---|---|
-| `DATABASE_URL` | the Postgres **Internal Database URL** |
-| `BREVO_API_KEY` | a Brevo **API key** (SMTP & API → API Keys) |
-| `SENDER_EMAIL` or `BREVO_SENDER_EMAIL` | `atharvap3212@gmail.com` (a verified sender in Brevo) |
+| Runtime | Node |
+| Build command | `cd server && npm ci --omit=optional` |
+| Start command | `node server/index.js` |
+
+| Environment variable | Value |
+|---|---|
+| `MONGODB_URI` | MongoDB Atlas connection string (`mongodb+srv://…`) |
+| `BREVO_API_KEY` | Brevo API key (SMTP & API → API Keys) |
+| `BREVO_SENDER_EMAIL` | `atharvap3212@gmail.com` (a verified sender in Brevo) |
+
+In MongoDB Atlas → Network Access, allow `0.0.0.0/0` (Render's free plan has no fixed IP address).
 
 ## Demo script (for the evaluation)
 1. Open the site in **two browser tabs**. Use one as the student and one as the vendor (**For vendors**, demo PIN `1234`).

@@ -15,7 +15,7 @@ async function sendCode(to, code) {
 
   if (!process.env.BREVO_API_KEY) {
     if (process.env.RENDER) {
-      console.error("BREVO_API_KEY is not set: can't email sign-in codes. Add it under campus-vendors-api → Environment.");
+      console.error("BREVO_API_KEY is not set: can't email sign-in codes. Add it under your Render service → Environment.");
       throw new Error("email_not_configured");
     }
     console.log(`[dev] No BREVO_API_KEY set. Code for ${to}: ${code}`);
