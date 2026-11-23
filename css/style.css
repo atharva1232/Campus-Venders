@@ -93,7 +93,9 @@ input:focus, select:focus, .btn:focus-visible, .chip:focus-visible { outline: 3p
 .form.narrow-wide { max-width: 640px; }
 .form h3 { margin-top: 18px; padding-top: 14px; border-top: 1px dashed var(--line); }
 .form h3:first-child { margin-top: 0; padding-top: 0; border-top: 0; }
-.form .switch { margin-bottom: 12px; }
+/* switches inside forms keep their own layout (the general ".form label" rule made them block-level,
+   so the track lost its size and the knob sat on top of the text) */
+.form label.switch { display: flex; width: fit-content; margin-bottom: 12px; }
 .form textarea { margin-top: 5px; min-height: 110px; resize: vertical; }
 .row2 { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
 @media (max-width: 520px) { .row2 { grid-template-columns: 1fr; } }
@@ -114,7 +116,7 @@ input:focus, select:focus, .btn:focus-visible, .chip:focus-visible { outline: 3p
 .switch { position: relative; }
 .switch input { position: absolute; opacity: 0; width: 1px; height: 1px; }
 .switch input:focus-visible + span { outline: 3px solid rgba(226,103,43,.35); }
-.switch span { width: 38px; height: 22px; border-radius: 11px; background: var(--line); position: relative; transition: background .2s; flex: none; }
+.switch span { display: inline-block; width: 38px; height: 22px; border-radius: 11px; background: var(--line); position: relative; transition: background .2s; flex: none; }
 .switch span::after { content: ""; position: absolute; top: 3px; left: 3px; width: 16px; height: 16px; border-radius: 50%; background: #fff; box-shadow: 0 1px 2px rgba(0,0,0,.2); transition: left .2s; }
 .switch input:checked + span { background: var(--open); }
 .switch input:checked + span::after { left: 19px; }
