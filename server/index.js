@@ -8,6 +8,7 @@ const path = require("path");
 const express = require("express");
 const cors = require("cors");
 const DB = require("./db");
+const { OAuth2Client } = require("google-auth-library");
 const { sendCode, sendEmail, sendMerchantApplication, sendBanNotice, sendMerchantDecision } = require("./mail");
 
 const PORT = Number(process.env.PORT) || 10000;
@@ -17,13 +18,40 @@ const SESSION_DAYS = 30;
 const WARNING_FEE_PERCENT = { 1: 5, 2: 10 };
 const ADMIN_EMAIL = String(process.env.ADMIN_EMAIL || "").trim().toLowerCase();
 // Local only (never on Render): with no Brevo key, the code is shown in the response so you can test.
-const DEV = !process.env.RENDER && !process.env.BREVO_API_KEY;
+const PRODUCTION = Boolean(process.env.RENDER) || process.env.NODE_ENV === "production";
+const MOBILE_ONLY = process.env.MOBILE_ONLY === "1";
+const DEV = !PRODUCTION && !process.env.BREVO_API_KEY;
+const MOBILE_SECRET = process.env.MOBILE_AUTH_SECRET || crypto.randomBytes(32).toString("hex");
+const GOOGLE_AUDIENCE = process.env.GOOGLE_CLIENT_ID;
+const googleVerifier = new OAuth2Client();
 
 const app = express();
 app.set("trust proxy", 1);
 // the site is normally on this same address; CORS only matters for other origins (e.g. python serve.py)
 app.use(cors({ origin: ORIGINS, allowedHeaders: ["content-type", "authorization", "x-vendor-token"] }));
-app.use(express.json({ limit: "15mb" })); // print files arrive as data URLs (≤10 MB)
+app.disable("x-powered-by");
+const smallJson = express.json({ limit: "128kb" });
+const printJson = express.json({ limit: "15mb" }); // print files arrive as base64 (≤10 MB decoded)
+app.use((req, res, next) => {
+  const path = req.path.toLowerCase().replace(/\/+$/, "");
+  const parser = req.method === "POST" && ["/api/orders", "/api/mobile/orders"].includes(path) ? printJson : smallJson;
+  parser(req, res, next);
+});
+if (MOBILE_ONLY) {
+  const legacy = new Set([
+    "POST /api/auth/send-code", "POST /api/auth/verify", "POST /api/auth/finish",
+    "POST /api/auth/signin", "POST /api/orders", "POST /api/vendors", "POST /api/vendor/login",
+  ]);
+  app.use((req, res, next) => {
+    if (!/^\/api\//i.test(req.path)) return res.status(404).json({ error: "Campus Vendors mobile API." });
+    res.set("Cache-Control", "no-store");
+    if (legacy.has(`${req.method} ${req.path.toLowerCase().replace(/\/+$/, "")}`)
+        || (req.method === "PUT" && /^\/api\/vendor\/orders\//i.test(req.path))) {
+      return res.status(404).json({ error: "Use the Campus Vendors mobile app." });
+    }
+    next();
+  });
+}
 
 /* ---------- helpers ---------- */
 const C = DB.col;
@@ -41,10 +69,14 @@ function canonicalGmail(e) {
 }
 const str = (v, max) => String(v == null ? "" : v).trim().slice(0, max);
 const fail = (res, status, error, extra) => res.status(status).json({ error, ...(extra || {}) });
-const wrap = (fn) => (req, res) => fn(req, res).catch((e) => { console.error(e); fail(res, 500, "Something went wrong on the server. Please try again."); });
+const wrap = (fn) => (req, res, next) => fn(req, res, next).catch((e) => { console.error(e); fail(res, 500, "Something went wrong on the server. Please try again."); });
 const days = (n) => new Date(Date.now() + n * 864e5);
 
-const isBlocked = async (email) => !!(await C.blockedEmails.findOne({ _id: canonicalGmail(email) }));
+async function isBlocked(email) {
+  const canonical = canonicalGmail(email);
+  const ids = MOBILE_ONLY ? [canonical, mobileHash(`ban:${canonical}`)] : [canonical];
+  return !!await C.blockedEmails.findOne({ _id: { $in: ids } });
+}
 async function newSession(kind, subject, ttlDays = SESSION_DAYS) {
   const token = newToken();
   await C.sessions.insertOne({ _id: sha(token), kind, subject: String(subject), createdAt: new Date(), expiresAt: days(ttlDays) });
@@ -57,7 +89,7 @@ async function sessionSubject(token, kind) {
 }
 const bearer = (req) => { const h = req.get("authorization") || ""; return h.startsWith("Bearer ") ? h.slice(7) : null; };
 
-const studentOut = (s) => ({ id: s._id, email: s.email, name: s.name, cls: s.cls, phone: s.phone, strikes: s.strikes || 0, blocked: !!s.blocked, feePending: !!s.feePending, warningFeePercent: s.feePending && !s.feeOrderId ? WARNING_FEE_PERCENT[s.strikes] || 0 : 0, feeOrderId: s.feeOrderId || null });
+const studentOut = (s) => ({ id: s._id, email: s.email, name: s.name, cls: s.cls, phone: s.phone, strikes: s.strikes || 0, blocked: !!s.blocked, feePending: !!s.feePending, warningFeePercent: s.feePending && !s.feeOrderId ? WARNING_FEE_PERCENT[s.feeLevel ?? s.strikes] || 0 : 0, feeOrderId: s.feeOrderId || null });
 async function loadStudent(req) {
   const id = await sessionSubject(bearer(req), "student");
   return id ? C.students.findOne({ _id: id }) : null;
@@ -76,40 +108,102 @@ async function needVendor(req, res) {
   return v;
 }
 /* what students see: everything except the login pincode */
-function vendorOut(v) { const d = { ...v.data, id: v._id }; delete d.pincode; return d; }
+function vendorOut(v) {
+  const { pincode, ownerEmail, nameKey, ...publicData } = v.data;
+  if (MOBILE_ONLY && Array.isArray(publicData.ratings)) {
+    publicData.ratings = publicData.ratings.map(({ studentId, ...rating }) => rating);
+  }
+  return { ...publicData, id: v._id };
+}
 const orderOut = (o) => ({ ...o.data, id: o._id, status: o.status });
 const feedbackOut = (f) => ({ ...f.data, id: f._id, status: f.status });
 const noShowsOf = async (studentId) => (await C.noShows.find({ studentId }).sort({ at: -1 }).toArray())
   .map((n) => ({ order_id: n._id, token: n.token, shop: n.shop, at: n.at }));
 const appId = () => "va" + Date.now().toString(36) + crypto.randomBytes(5).toString("hex");
 const publicBase = (req) => String(process.env.PUBLIC_URL || process.env.RENDER_EXTERNAL_URL || `${req.protocol}://${req.get("host")}`).replace(/\/$/, "");
-async function logStudentIp(req, student, method) {
-  const ip = String(req.ip || req.socket?.remoteAddress || "unknown").slice(0, 80);
-  const old = await C.loginEvents.find({ ip, email: { $ne: student.email }, createdAt: { $gt: days(-90) } }).sort({ createdAt: -1 }).limit(100).toArray();
-  let related = null;
-  for (const event of old) if (await C.blockedEmails.findOne({ _id: event.email })) { related = event; break; }
-  if (related) {
-    const reason = `Sign-in IP matches a recently banned account (${related.email})`;
-    await C.students.updateOne({ _id: student._id }, { $set: { blocked: true } });
-    await C.blockedEmails.updateOne({ _id: student.email }, { $setOnInsert: { reason, at: new Date() } }, { upsert: true });
-    try { await sendBanNotice(student.email, student.name, reason); } catch(e) { console.error("Ban email failed:",e.message); }
-    if (ADMIN_EMAIL.includes("@")) try { await sendEmail(ADMIN_EMAIL,`Account suspended: ${student.email}`,`${student.email} was banned. Reason: ${reason}. IP: ${ip}`,`<p>${student.email} was banned.</p><p>Reason: ${reason}</p><p>IP: ${ip}</p>`); } catch(e) { console.error("IP alert email failed:",e.message); }
-    return { blocked: true, reason };
+const mobileHash = value => crypto.createHmac("sha256", MOBILE_SECRET).update(value).digest("hex");
+
+async function withinRateLimit(bucket, key, max, windowMs) {
+  const windowStart = Math.floor(Date.now() / windowMs) * windowMs;
+  const _id = mobileHash(`${bucket}:${key}:${windowStart}`);
+  const update = { $inc: { count: 1 }, $setOnInsert: { expiresAt: new Date(windowStart + windowMs) } };
+  let record;
+  try {
+    record = await C.rateLimits.findOneAndUpdate({ _id }, update, { upsert: true, returnDocument: "after" });
+  } catch (err) {
+    if (err.code !== 11000) throw err;
+    record = await C.rateLimits.findOneAndUpdate({ _id }, update, { returnDocument: "after" });
   }
-  await C.loginEvents.insertOne({ email: student.email, studentId: student._id, ip, method, userAgent: String(req.get("user-agent")||"").slice(0,200), createdAt: new Date(), expiresAt: days(90) });
-  return { blocked: false };
+  return Boolean(record && record.count <= max);
 }
-async function issueStrike(student, order, reason) {
-  await C.noShows.updateOne({ _id: order._id }, { $setOnInsert: { studentId: student._id, token: order.data.token, shop: order.data.shopName || "Shop", at: new Date(), reason } }, { upsert: true });
-  const strikes = await C.noShows.countDocuments({ studentId: student._id });
-  const blocked = strikes >= 3, feePending = !blocked;
-  await C.students.updateOne({ _id: student._id }, { $set: { strikes, blocked, feePending, feeOrderId: null } });
-  if (blocked) {
-    const why = "Three order cancellations or missed pickups";
-    await C.blockedEmails.updateOne({ _id: student.email }, { $setOnInsert: { reason: why, at: new Date() } }, { upsert: true });
-    try { await sendBanNotice(student.email, student.name, why); } catch(e) { console.error("Ban email failed:",e.message); }
+
+function limitMobile(bucket, max, windowMs) {
+  return wrap(async (req, res, next) => {
+    if (!await withinRateLimit(bucket, req.ip, max, windowMs)) {
+      res.set("Retry-After", String(Math.ceil(windowMs / 1000)));
+      return fail(res, 429, "Too many attempts. Please try again later.");
+    }
+    next();
+  });
+}
+
+async function logStudentIp(req, student, method) {
+  const ip = req.ip || req.socket?.remoteAddress;
+  if (!ip) return;
+  const ipHash = mobileHash(`ip:${ip}`);
+  const now = new Date();
+  const matches = await C.loginEvents.distinct("email", {
+    ip: ipHash, email: { $ne: student.email }, expiresAt: { $gt: now },
+  });
+  const related = matches.length
+    ? await C.blockedEmails.findOne({ _id: { $in: matches.flatMap(email => [email, mobileHash(`ban:${email}`)]) } })
+    : null;
+  if (related && ADMIN_EMAIL && await withinRateLimit("ip-notice", student.email, 1, 864e5)) {
+    const message = `${student.email} signed in from an address previously used by a banned account. Review before banning this account. Reason: shared sign-in IP with a previously banned account.`;
+    try {
+      await sendEmail(ADMIN_EMAIL, "Campus Vendors: possible repeat banned account", message);
+    } catch (err) {
+      console.error("IP alert email failed:", err.message);
+    }
   }
-  return { strikes, blocked, feePercent: WARNING_FEE_PERCENT[strikes] || 0 };
+  await C.loginEvents.updateOne({ _id: mobileHash(`login:${student._id}:${ipHash}`) }, {
+    $set: { studentId: student._id, email: student.email, ip: ipHash, method, createdAt: now, expiresAt: days(90) },
+  }, { upsert: true });
+}
+async function issueStrike(student, order, reason, session) {
+  if (!student) return null;
+  await C.noShows.insertOne({
+    _id: order._id, studentId: student._id, token: order.data.token,
+    shop: order.data.shopName || "Shop", at: new Date(), reason,
+  }, { session });
+  const strikes = (student.strikes || 0) + 1;
+  const blocked = strikes >= 3;
+  const changes = { strikes, blocked };
+  if (reason === "not_collected") {
+    changes.feeLevel = Math.min(2, (student.feeLevel || 0) + 1);
+    changes.feePending = !blocked;
+  }
+  if (blocked) {
+    changes.feePending = false;
+    changes.feeOrderId = null;
+    const banId = MOBILE_ONLY ? mobileHash(`ban:${student.email}`) : student.email;
+    await C.blockedEmails.updateOne({ _id: banId }, {
+      $setOnInsert: { reason: "Three order cancellations or missed pickups", at: new Date() },
+    }, { upsert: true, session });
+  }
+  await C.students.updateOne({ _id: student._id }, { $set: changes }, { session });
+  return { strikes, blocked, newlyBlocked: blocked && !student.blocked, email: student.email, name: student.name };
+}
+
+async function notifyStrike(strike) {
+  if (strike?.newlyBlocked) {
+    try {
+      await sendBanNotice(strike.email, strike.name, "Three order cancellations or missed pickups");
+    } catch (err) {
+      console.error("Ban email failed:", err.message);
+    }
+  }
+  return strike && { strikes: strike.strikes, blocked: strike.blocked };
 }
 
 /* ---------- the website (only its own files are public) ---------- */
@@ -119,7 +213,14 @@ app.use("/css", express.static(path.join(ROOT, "css"), noCache));
 app.use("/js", express.static(path.join(ROOT, "js"), noCache));
 app.get(["/", "/index.html"], (req, res) => { res.set("Cache-Control", "no-cache"); res.sendFile(path.join(ROOT, "index.html")); });
 app.get("/api/health", (req, res) => res.json({ ok: true, service: "campus-vendors", db: DB.kind, email: process.env.BREVO_API_KEY ? "brevo" : "not set" }));
-app.get("/api/mobile/health", (req,res)=>res.json({ok:true,service:"campus-vendors-mobile-api",db:DB.kind,emailConfigured:!!process.env.BREVO_API_KEY,merchantReviewConfigured:!!process.env.ADMIN_EMAIL}));
+app.get("/api/mobile/health", wrap(async (req, res) => {
+  const ready = await DB.ping().catch(() => false);
+  res.status(ready ? 200 : 503).json({
+    ok: ready, service: "campus-vendors-mobile-api", db: DB.kind,
+    emailConfigured: !!process.env.BREVO_API_KEY, merchantReviewConfigured: !!ADMIN_EMAIL,
+    googleConfigured: !!GOOGLE_AUDIENCE,
+  });
+}));
 
 /* ---------- student sign-up / sign-in ---------- */
 // 1. Email a 6-digit code. `details` (name, class, phone) come with it when creating an account.
@@ -178,41 +279,152 @@ app.post("/api/auth/verify", wrap(async (req, res) => {
   res.json({ token: await newSession("student", s._id), student: studentOut(s) });
 }));
 
-// Mobile-only OTP completion adds IP-based account protection without changing the website login flow.
-app.post("/api/mobile/auth/verify", wrap(async (req,res)=>{
-  const email=canonicalGmail(str(req.body.email,120)), code=str(req.body.code,10).replace(/\D/g,"");
-  const c=await C.loginCodes.findOne({_id:email}); if(!c||c.expiresAt<new Date())return fail(res,400,"That code expired. Ask for a new one.");
-  if(c.attempts>=5)return fail(res,429,"Too many wrong tries. Ask for a new code.");
-  if(c.codeHash!==sha(email+":"+code)){await C.loginCodes.updateOne({_id:email},{$inc:{attempts:1}});return fail(res,400,"That code is incorrect.");}
-  await C.loginCodes.deleteOne({_id:email}); if(await isBlocked(email))return fail(res,403,"This account is banned from ordering.",{blocked:true});
-  let s=await C.students.findOne({email}); const d=c.details||req.body.details;
-  if(!s&&!d)return res.json({needsProfile:true,pendingToken:await newSession("pending-mobile",email,1),email});
-  if(!s){s={_id:newId("s"),email,name:str(d.name,40),cls:str(d.cls,30),phone:cleanPhone(d.phone),strikes:0,blocked:false,createdAt:new Date()};await C.students.insertOne(s);}
-  else if(d){s={...s,name:str(d.name,40)||s.name,cls:str(d.cls,30)||s.cls,phone:cleanPhone(d.phone)||s.phone};await C.students.updateOne({_id:s._id},{$set:{name:s.name,cls:s.cls,phone:s.phone}});}
-  const security=await logStudentIp(req,s,"mobile_otp"); if(security.blocked)return fail(res,403,security.reason,{blocked:true});
-  res.json({token:await newSession("student",s._id),student:studentOut(s)});
+/* ---------- mobile authentication ---------- */
+const minute = 60_000;
+const authLimit = limitMobile("auth", 50, 15 * minute);
+
+function profileDetails(body) {
+  return {
+    name: str(body.name, 40).replace(/\s+/g, " "),
+    cls: str(body.cls, 30),
+    phone: cleanPhone(body.phone),
+  };
+}
+
+function completeProfile(details) {
+  return details && details.name?.length >= 2 && details.cls && PHONE.test(details.phone);
+}
+
+async function sendMobileCode(res, key, to, details) {
+  if (!await withinRateLimit("send-code", key, 1, minute)
+      || !await withinRateLimit("code-hour", key, 5, 60 * minute)) {
+    return fail(res, 429, "Wait before asking for another code.");
+  }
+
+  const code = String(crypto.randomInt(0, 1_000_000)).padStart(6, "0");
+  const codeHash = mobileHash(`otp:${key}:${code}`);
+  try {
+    await C.loginCodes.replaceOne({ _id: key }, {
+      _id: key, codeHash, details, attempts: 0, expiresAt: new Date(Date.now() + CODE_TTL_MIN * minute),
+    }, { upsert: true });
+    await sendCode(to, code, "app");
+  } catch (err) {
+    await C.loginCodes.deleteOne({ _id: key, codeHash });
+    return fail(res, 502, "The email could not be sent. Try again in a minute.");
+  }
+  return res.json({ ok: true, ...(DEV ? { devCode: code } : {}) });
+}
+
+async function consumeMobileCode(key, code) {
+  if (typeof code !== "string" || !/^\d{6}$/.test(code)) return null;
+  const live = { _id: key, expiresAt: { $gt: new Date() }, attempts: { $lt: 5 } };
+  const codeHash = mobileHash(`otp:${key}:${code}`);
+  const verified = await C.loginCodes.findOneAndDelete({ ...live, codeHash });
+  if (!verified) await C.loginCodes.updateOne({ ...live, codeHash: { $ne: codeHash } }, { $inc: { attempts: 1 } });
+  return verified;
+}
+
+async function storeStudent(email, details, session) {
+  return C.students.findOneAndUpdate({ email }, {
+    $setOnInsert: { _id: newId("s"), email, ...details, strikes: 0, blocked: false, createdAt: new Date() },
+  }, { upsert: true, returnDocument: "after", session });
+}
+
+async function finishMobileAuth(req, res, student, method) {
+  if (student.blocked || await isBlocked(student.email)) {
+    return fail(res, 403, "This account is banned from ordering.", { blocked: true });
+  }
+  try {
+    await logStudentIp(req, student, method);
+  } catch (err) {
+    console.error("Mobile sign-in audit failed:", err.message);
+  }
+  return res.json({ token: await newSession("student", student._id), student: studentOut(student) });
+}
+
+app.post("/api/mobile/auth/send-code", authLimit, wrap(async (req, res) => {
+  const raw = str(req.body?.email, 120).toLowerCase();
+  if (!GMAIL.test(raw)) return fail(res, 400, "Enter a valid Gmail address.");
+  const email = canonicalGmail(raw);
+  if (await isBlocked(email)) return fail(res, 403, "This account is banned from ordering.", { blocked: true });
+  const details = req.body.details && profileDetails(req.body.details);
+  if (details && !completeProfile(details)) return fail(res, 400, "Enter your name, class, and a valid mobile number.");
+  return sendMobileCode(res, `mobile:student:${email}`, raw, details || null);
 }));
-app.post("/api/mobile/auth/finish", wrap(async(req,res)=>{
-  const email=await sessionSubject(req.body.pendingToken,"pending-mobile"); if(!email)return fail(res,401,"Start again and request a fresh code.");
-  if(await isBlocked(email))return fail(res,403,"This account is banned from ordering.",{blocked:true});
-  const name=str(req.body.name,40),cls=str(req.body.cls,30),phone=cleanPhone(req.body.phone);
-  if(name.length<2||!cls||!PHONE.test(phone))return fail(res,400,"Enter name, class and a valid mobile number.");
-  await C.students.updateOne({email},{$set:{name,cls,phone},$setOnInsert:{_id:newId("s"),email,strikes:0,blocked:false,createdAt:new Date()}},{upsert:true});
-  const s=await C.students.findOne({email}); await C.sessions.deleteOne({_id:sha(req.body.pendingToken)});
-  const security=await logStudentIp(req,s,"mobile_otp"); if(security.blocked)return fail(res,403,security.reason,{blocked:true});
-  res.json({token:await newSession("student",s._id),student:studentOut(s)});
+
+app.post("/api/mobile/auth/verify", authLimit, wrap(async (req, res) => {
+  const email = canonicalGmail(str(req.body?.email, 120));
+  const verified = await consumeMobileCode(`mobile:student:${email}`, req.body?.code);
+  if (!verified) return fail(res, 400, "That code is incorrect or expired. Check the latest email or request a new code.");
+  if (await isBlocked(email)) return fail(res, 403, "This account is banned from ordering.", { blocked: true });
+
+  let student = await C.students.findOne({ email });
+  if (!student && completeProfile(verified.details)) student = await storeStudent(email, verified.details);
+  if (!student || !completeProfile(student)) {
+    return res.json({ needsProfile: true, pendingToken: await newSession("pending-mobile", email, 1 / 96), email });
+  }
+  return finishMobileAuth(req, res, student, "mobile_otp");
 }));
-app.post("/api/mobile/auth/google", wrap(async(req,res)=>{
-  const idToken=str(req.body.idToken,5000);if(!idToken)return fail(res,400,"Google sign-in did not return an ID token.");
-  const verify=await fetch(`https://oauth2.googleapis.com/tokeninfo?id_token=${encodeURIComponent(idToken)}`);if(!verify.ok)return fail(res,401,"Google sign-in could not be verified.");
-  const profile=await verify.json(),audiences=[process.env.GOOGLE_CLIENT_ID,process.env.GOOGLE_ANDROID_CLIENT_ID,process.env.GOOGLE_IOS_CLIENT_ID].filter(Boolean);
-  if(!audiences.length)return fail(res,503,"Google sign-in is not configured on the server.");
-  if(!profile.email_verified||!GMAIL.test(profile.email||"")||!audiences.includes(profile.aud))return fail(res,401,"Use a verified Gmail account authorized for this app.");
-  const email=canonicalGmail(profile.email);if(await isBlocked(email))return fail(res,403,"This account is banned from ordering.",{blocked:true});
-  let s=await C.students.findOne({email});if(!s){s={_id:newId("s"),email,name:str(profile.name,40)||email.split("@")[0],cls:"",phone:"",strikes:0,blocked:false,createdAt:new Date()};await C.students.insertOne(s);}
-  if(!s.phone||!s.cls)return res.json({needsProfile:true,pendingToken:await newSession("pending-mobile",email,1),email});
-  const security=await logStudentIp(req,s,"google");if(security.blocked)return fail(res,403,security.reason,{blocked:true});
-  res.json({token:await newSession("student",s._id),student:studentOut(s)});
+
+app.post("/api/mobile/auth/finish", authLimit, wrap(async (req, res) => {
+  const details = profileDetails(req.body || {});
+  if (!completeProfile(details)) return fail(res, 400, "Enter a name, class, and valid mobile number.");
+  const filter = { _id: sha(req.body?.pendingToken), kind: "pending-mobile", expiresAt: { $gt: new Date() } };
+  const student = await DB.transaction(async session => {
+    const pending = await C.sessions.findOneAndDelete(filter, { session });
+    if (!pending) return null;
+    if (await C.blockedEmails.findOne({ _id: { $in: [pending.subject, mobileHash(`ban:${pending.subject}`)] } }, { session })) return { blocked: true };
+    const account = await storeStudent(pending.subject, details, session);
+    if (completeProfile(account) || account.blocked) return account;
+    return C.students.findOneAndUpdate({ _id: account._id }, { $set: details }, { session, returnDocument: "after" });
+  });
+  if (!student) return fail(res, 401, "Sign in again to finish your profile.");
+  return finishMobileAuth(req, res, student, "mobile_profile");
+}));
+
+app.post("/api/mobile/auth/google", authLimit, wrap(async (req, res) => {
+  if (!GOOGLE_AUDIENCE) return fail(res, 503, "Google sign-in is unavailable. Use email instead.");
+  const idToken = req.body?.idToken;
+  if (typeof idToken !== "string" || !idToken || idToken.length > 10000) {
+    return fail(res, 400, "Google sign-in did not return an ID token.");
+  }
+  let profile;
+  try {
+    const ticket = await googleVerifier.verifyIdToken({ idToken, audience: GOOGLE_AUDIENCE });
+    profile = ticket.getPayload();
+  } catch {
+    return fail(res, 401, "Google sign-in could not be verified.");
+  }
+  if (profile?.email_verified !== true || !GMAIL.test(profile.email || "") || !profile.sub) {
+    return fail(res, 401, "Use a verified Gmail account to sign in.");
+  }
+  const email = canonicalGmail(profile.email);
+  if (await isBlocked(email)) return fail(res, 403, "This account is banned from ordering.", { blocked: true });
+
+  const student = await storeStudent(email, { name: str(profile.name, 40) || email.split("@")[0], cls: "", phone: "" });
+  const linked = await C.students.updateOne({
+    _id: student._id, $or: [{ googleSubject: { $exists: false } }, { googleSubject: profile.sub }],
+  }, { $set: { googleSubject: profile.sub } });
+  if (!linked.matchedCount) return fail(res, 401, "This Google identity does not match the account.");
+  if (!completeProfile(student)) {
+    return res.json({ needsProfile: true, pendingToken: await newSession("pending-mobile", email, 1 / 96), email, name: student.name });
+  }
+  return finishMobileAuth(req, res, student, "google");
+}));
+
+app.post("/api/mobile/vendor/send-code", authLimit, wrap(async (req, res) => {
+  const email = canonicalGmail(str(req.body?.email, 120));
+  const vendor = await C.vendors.findOne({ nameKey: DB.nameKey(req.body?.shop), ownerEmail: email });
+  if (!vendor) return fail(res, 400, "Enter the approved shop name and its owner Gmail.");
+  return sendMobileCode(res, `mobile:vendor:${vendor._id}`, vendor.ownerEmail, null);
+}));
+
+app.post("/api/mobile/vendor/verify", authLimit, wrap(async (req, res) => {
+  const email = canonicalGmail(str(req.body?.email, 120));
+  const vendor = await C.vendors.findOne({ nameKey: DB.nameKey(req.body?.shop), ownerEmail: email });
+  const verified = vendor && await consumeMobileCode(`mobile:vendor:${vendor._id}`, req.body?.code);
+  if (!verified) return fail(res, 400, "That code is incorrect or expired. Ask for a new one.");
+  return res.json({ token: await newSession("vendor", vendor._id), vendorId: vendor._id });
 }));
 
 // 2b. Finish a verified account that had no details yet.
@@ -335,44 +547,180 @@ app.post("/api/orders", wrap(async (req, res) => {
 }));
 
 // App-only order API applies the warning fee policy while the website keeps its original flow.
-app.post("/api/mobile/orders", wrap(async(req,res)=>{
-  const s=await needStudent(req,res);if(!s)return;const b=req.body||{},row=await C.vendors.findOne({_id:str(b.vendorId,60)}),v=row&&row.data;
-  if(!v)return fail(res,404,"Shop not found.");if(v.status==="closed")return fail(res,409,`${v.name} is closed right now.`);
-  const items=[];let print=null,file=null,subtotal=0;
-  if(b.type==="print") {
-    if(!v.print)return fail(res,400,"This shop doesn't take print jobs.");const p=b.print||{},pages=Math.min(999,Math.max(1,Number(p.pages)||1)),copies=Math.min(50,Math.max(1,Number(p.copies)||1)),color=p.color==="color"?"color":"bw",sides=p.sides==="double"?"double":"single",binding=p.binding==="spiral"?"spiral":"none";
-    const printing=pages*copies*(color==="color"?v.print.color:v.print.bw);subtotal=Math.round(printing-(sides==="double"?printing*(v.print.doubleSidedDiscount||0):0)+(binding==="spiral"?(v.print.binding||0)*copies:0));
-    items.push({name:`${pages} pg × ${copies} · ${color} · ${sides}`,price:subtotal,qty:1});file=typeof b.file==="string"&&b.file.startsWith("data:application/pdf;base64,")?b.file:null;if(file&&file.length>14*1024*1024)return fail(res,413,"PDF is larger than 10 MB.");
-    print={fileName:str(p.fileName,120)||"file.pdf",size:Number(p.size)||0,pages,copies,color,sides,binding,hasFile:!!file};
-  } else {
-    for(const it of Array.isArray(b.items)?b.items.slice(0,50):[]){const m=(v.menu||[]).find(x=>x.id===it.id),qty=Math.min(50,Math.max(1,Number(it.qty)||0));if(m&&m.inStock&&qty)items.push({id:m.id,name:m.name,price:m.price,qty});}
-    if(!items.length)return fail(res,400,"Your cart is empty or these items are out of stock.");subtotal=items.reduce((a,i)=>a+i.price*i.qty,0);
+const MAX_PDF_BYTES = 10 * 1024 * 1024;
+const orderLimit = limitMobile("orders", 100, 60 * minute);
+const reject = (status, error) => ({ status, error });
+
+function safePdfName(value) {
+  const cleaned = str(value, 120).replace(/[^a-zA-Z0-9._ -]/g, "_").replace(/^\.+/, "");
+  return cleaned.toLowerCase().endsWith(".pdf") ? cleaned : "print-job.pdf";
+}
+
+function mobileOrderContent(body, shop) {
+  if (body.type === "print") {
+    if (!shop.print) return reject(400, "This shop doesn't take print jobs.");
+    const options = body.print || {};
+    const pages = Number(options.pages), copies = Number(options.copies);
+    if (!Number.isInteger(pages) || pages < 1 || pages > 999 || !Number.isInteger(copies) || copies < 1 || copies > 50) {
+      return reject(400, "Choose 1–999 pages and 1–50 copies.");
+    }
+    const prefix = "data:application/pdf;base64,";
+    const encoded = typeof body.file === "string" && body.file.startsWith(prefix) ? body.file.slice(prefix.length) : "";
+    if (encoded.length > Math.ceil(MAX_PDF_BYTES / 3) * 4) return reject(413, "PDF is larger than 10 MB.");
+    if (!encoded || encoded.length % 4 !== 0 || /[^a-zA-Z0-9+/=]/.test(encoded)) return reject(400, "Attach a valid PDF.");
+    const pdf = Buffer.from(encoded, "base64");
+    if (pdf.length > MAX_PDF_BYTES) return reject(413, "PDF is larger than 10 MB.");
+    if (pdf.subarray(0, 5).toString() !== "%PDF-" || !pdf.subarray(-1024).includes("%%EOF")) {
+      return reject(400, "The file is not a valid PDF.");
+    }
+    const color = options.color === "color" ? "color" : "bw";
+    const sides = options.sides === "double" ? "double" : "single";
+    const binding = options.binding === "spiral" ? "spiral" : "none";
+    const price = Number(shop.print[color]);
+    if (!Number.isFinite(price) || price <= 0) return reject(409, "This print option is unavailable.");
+    const printCharge = pages * copies * price;
+    const discount = sides === "double" ? printCharge * (Number(shop.print.doubleSidedDiscount) || 0) : 0;
+    const bindingCharge = binding === "spiral" ? (Number(shop.print.binding) || 0) * copies : 0;
+    const subtotal = Math.round(printCharge - discount + bindingCharge);
+    return {
+      subtotal, file: prefix + pdf.toString("base64"),
+      items: [{ name: `${pages} pg × ${copies} · ${color} · ${sides}`, price: subtotal, qty: 1 }],
+      print: { fileName: safePdfName(options.fileName), size: pdf.length, pages, copies, color, sides, binding, hasFile: true },
+    };
   }
-  const percent=s.feePending&&!s.feeOrderId?(WARNING_FEE_PERCENT[s.strikes]||0):0,fee=percent?Math.ceil(subtotal*percent/100):0,total=subtotal+fee;
-  const id=newId("o"),token=(v.name.replace(/[^A-Za-z]/g,"").slice(0,1).toUpperCase()||"T")+"-"+(await DB.nextSeq("order",101));
-  const data={id,token,type:b.type==="print"?"print":"food",vendorId:row._id,items,subtotal,total,...(fee?{warningFee:{percent,amount:fee,forMerchant:true}}:{}),pickup:/^(ASAP|\d{2}:\d{2})$/.test(b.pickup)?b.pickup:"ASAP",note:str(b.note,100),student:{id:s._id,name:s.name,cls:s.cls,phone:s.phone,email:s.email},createdAt:Date.now(),...(print?{print}:{})};
-  await C.orders.insertOne({_id:id,vendorId:row._id,studentId:s._id,status:"placed",data,createdAt:new Date()});if(fee)await C.students.updateOne({_id:s._id},{$set:{feeOrderId:id}});if(file)await C.printFiles.insertOne({_id:id,dataUrl:file});
-  res.json({order:{...data,status:"placed"}});
+
+  if (!Array.isArray(body.items) || body.items.length === 0 || body.items.length > 50) {
+    return reject(400, "Add items to your cart before ordering.");
+  }
+  const menu = new Map((shop.menu || []).map(item => [item.id, item]));
+  const items = [];
+  const used = new Set();
+  for (const entry of body.items) {
+    const item = menu.get(entry?.id);
+    const qty = entry?.qty;
+    if (!item || item.inStock === false || !Number.isFinite(item.price) || item.price < 0) {
+      return reject(409, "A menu item is no longer available. Refresh the shop.");
+    }
+    if (used.has(item.id) || !Number.isInteger(qty) || qty < 1 || qty > 50) {
+      return reject(400, "Choose between 1 and 50 of each item.");
+    }
+    used.add(item.id);
+    items.push({ id: item.id, name: item.name, price: item.price, qty });
+  }
+  const subtotal = Math.round(items.reduce((sum, item) => sum + item.price * item.qty, 0) * 100) / 100;
+  return { items, subtotal };
+}
+
+app.post("/api/mobile/orders", orderLimit, wrap(async (req, res) => {
+  const account = await needStudent(req, res);
+  if (!account) return;
+  const body = req.body || {};
+  const requestId = body.requestId;
+  if (typeof requestId !== "string" || !/^[a-zA-Z0-9-]{16,80}$/.test(requestId)) {
+    return fail(res, 400, "This app version cannot submit orders. Update the app and try again.");
+  }
+  const id = `mo-${sha(`${account._id}:${requestId}`).slice(0, 32)}`;
+
+  const existing = await C.orders.findOne({ _id: id, studentId: account._id });
+  if (existing) return res.json({ order: orderOut(existing) });
+  const vendor = await C.vendors.findOne({ _id: str(body.vendorId, 60) });
+  if (!vendor) return fail(res, 404, "Shop not found.");
+  if (vendor.data.status === "closed") return fail(res, 409, `${vendor.data.name} is closed right now.`);
+  const content = mobileOrderContent(body, vendor.data);
+  if (content.error) return fail(res, content.status, content.error);
+  const { items, subtotal, print, file } = content;
+
+  const result = await DB.transaction(async session => {
+    const alreadyCreated = await C.orders.findOne({ _id: id, studentId: account._id }, { session });
+    if (alreadyCreated) return { order: orderOut(alreadyCreated) };
+    const student = await C.students.findOne({ _id: account._id }, { session });
+    if (!student || student.blocked) return reject(403, "This account is banned from ordering.");
+
+    const sequence = await DB.nextSeq("order", 101, session);
+    const token = (vendor.data.name.replace(/[^A-Za-z]/g, "").slice(0, 1).toUpperCase() || "T") + "-" + sequence;
+    const feeLevel = student.feeLevel ?? student.strikes;
+    const percent = student.feePending && !student.feeOrderId ? WARNING_FEE_PERCENT[feeLevel] || 0 : 0;
+    const fee = Math.round(subtotal * percent) / 100;
+    const data = {
+      id, token, type: print ? "print" : "food", vendorId: vendor._id, shopName: vendor.data.name,
+      items, subtotal, total: Math.round((subtotal + fee) * 100) / 100,
+      pickup: clockTime.test(body.pickup) ? body.pickup : "ASAP", note: str(body.note, 100),
+      student: { id: student._id, name: student.name, cls: student.cls, phone: student.phone },
+      createdAt: Date.now(), ...(print ? { print } : {}),
+      ...(fee ? { warningFee: { percent, amount: fee, forMerchant: true, level: feeLevel } } : {}),
+    };
+
+    await C.students.updateOne({ _id: student._id }, {
+      $set: { lastOrderAt: new Date(), ...(fee ? { feeOrderId: id } : {}) },
+    }, { session });
+    await C.orders.insertOne({ _id: id, studentId: student._id, vendorId: vendor._id, data, status: "placed", createdAt: new Date() }, { session });
+    if (file) await C.printFiles.insertOne({ _id: id, dataUrl: file }, { session });
+    return { order: { ...data, status: "placed" } };
+  }).catch(async err => {
+    if (err.code !== 11000) throw err;
+    const order = await C.orders.findOne({ _id: id, studentId: account._id });
+    if (!order) throw err;
+    return { order: orderOut(order) };
+  });
+  if (result.error) return fail(res, result.status, result.error);
+  return res.json(result);
 }));
 
-app.put("/api/mobile/orders/:id/cancel", wrap(async (req, res) => {
-  const s = await needStudent(req, res); if (!s) return;
-  const o = await C.orders.findOne({ _id: req.params.id, studentId: s._id, status: "placed" });
-  if (!o) return fail(res, 409, "Only new orders can be cancelled.");
-  const changed = await C.orders.updateOne({ _id: o._id, status: "placed" }, { $set: { status: "cancelled" } });
-  if (!changed.modifiedCount) return fail(res, 409, "This order was just updated.");
-  const strike = await issueStrike(s, o, "cancelled");
-  res.json({ ok: true, strike });
+async function changeMobileOrder(filter, status, session) {
+  return C.orders.findOneAndUpdate(filter, {
+    $set: { status, "data.updatedAt": Date.now() },
+  }, { returnDocument: "before", session });
+}
+
+async function settleMobileOrder(order, status, session) {
+  if (!["collected", "rejected", "no_show", "cancelled"].includes(status)) return null;
+  const student = await C.students.findOne({ _id: order.studentId }, { session });
+  if (student?.feeOrderId === order._id) {
+    const usedCurrentFee = status === "collected" && order.data.warningFee?.level === student.feeLevel;
+    await C.students.updateOne({ _id: student._id }, {
+      $set: { feeOrderId: null, ...(usedCurrentFee ? { feePending: false } : {}) },
+    }, { session });
+  }
+  await C.printFiles.deleteOne({ _id: order._id }, { session });
+  if (status === "cancelled" || status === "no_show") {
+    const reason = status === "cancelled" ? "cancelled" : "not_collected";
+    return issueStrike(student, order, reason, session);
+  }
+  return null;
+}
+
+app.put("/api/mobile/orders/:id/cancel", orderLimit, wrap(async (req, res) => {
+  const student = await needStudent(req, res);
+  if (!student) return;
+  const result = await DB.transaction(async session => {
+    const order = await changeMobileOrder({
+      _id: req.params.id, studentId: student._id, status: "placed",
+    }, "cancelled", session);
+    if (!order) return null;
+    return { strike: await settleMobileOrder(order, "cancelled", session) };
+  });
+  if (!result) return fail(res, 409, "Only new orders can be cancelled.");
+  return res.json({ ok: true, strike: await notifyStrike(result.strike) });
 }));
 
 app.post("/api/orders/:id/rate", wrap(async (req, res) => {
-  const s = await needStudent(req, res); if (!s) return;
-  const o = await C.orders.findOne({ _id: req.params.id, studentId: s._id });
-  if (!o || o.status !== "collected" || o.data.rating) return fail(res, 400, "You can rate an order once, after collecting it.");
-  const stars = Math.min(5, Math.max(1, Number(req.body.stars) || 0)), comment = str(req.body.comment, 100);
-  await C.orders.updateOne({ _id: o._id }, { $set: { "data.rating": { stars, comment } } });
-  await C.vendors.updateOne({ _id: o.vendorId }, { $push: { "data.ratings": { $each: [{ stars, comment, at: Date.now() }], $slice: -200 } } });
-  res.json({ ok: true });
+  const student = await needStudent(req, res);
+  if (!student) return;
+  const stars = Number(req.body?.stars), comment = str(req.body?.comment, 100);
+  if (!Number.isInteger(stars) || stars < 1 || stars > 5) return fail(res, 400, "Choose a rating from one to five.");
+  const filter = { _id: req.params.id, studentId: student._id, status: "collected", "data.rating": { $exists: false } };
+  const save = async session => {
+    const order = await C.orders.findOneAndUpdate(filter, { $set: { "data.rating": { stars, comment } } }, { session });
+    if (!order) return false;
+    const rating = { stars, comment, at: Date.now(), ...(MOBILE_ONLY ? { studentId: student._id } : {}) };
+    await C.vendors.updateOne({ _id: order.vendorId }, {
+      $push: { "data.ratings": { $each: [rating], $slice: -200 } },
+    }, { session });
+    return true;
+  };
+  const saved = MOBILE_ONLY ? await DB.transaction(save) : await save();
+  if (!saved) return fail(res, 400, "You can rate an order once, after collecting it.");
+  return res.json({ ok: true });
 }));
 
 /* ---------- feedback & complaints ---------- */
@@ -390,43 +738,133 @@ app.post("/api/feedback", wrap(async (req, res) => {
   res.json({ feedback: { ...data, status: "open" } });
 }));
 
-/* ---------- mobile merchant application, reviewed from expiring email links ---------- */
-app.post("/api/mobile/vendor-applications", wrap(async (req, res) => {
-  const b=req.body||{}, name=str(b.name,40), ownerEmail=canonicalGmail(str(b.ownerEmail,120)), phone=cleanPhone(b.phone), pincode=str(b.pincode,6), openTime=str(b.openTime,5)||"08:00", closeTime=str(b.closeTime,5)||"20:00";
-  if(name.length<2||!GMAIL.test(ownerEmail)||!/^\d{10}$/.test(phone)||!/^\d{6}$/.test(pincode)) return fail(res,400,"Enter shop name, owner Gmail, valid phone and campus pincode.");
-  if(!/^\d{2}:\d{2}$/.test(openTime)||!/^\d{2}:\d{2}$/.test(closeTime))return fail(res,400,"Opening and closing time must use HH:MM format.");
-  if(await C.vendors.findOne({nameKey:DB.nameKey(name)})||await C.vendorApplications.findOne({"data.nameKey":DB.nameKey(name),status:"pending"})) return fail(res,409,"This shop already exists or is awaiting review.");
-  const id=name.toLowerCase().replace(/[^a-z0-9]+/g,"-").replace(/^-|-$/g,"").slice(0,24)||"shop";
-  const token=crypto.randomBytes(32).toString("hex"), applicationId=appId();
-  const data={id,name,nameKey:DB.nameKey(name),category:str(b.category,24)||"Shops",emoji:"🏪",location:str(b.location,60),distance:0,phone,whatsapp:"91"+phone,hours:[[openTime,closeTime]],pincode,ownerEmail,status:"closed",queue:0,avgServe:2,note:"",menu:[],ratings:[],custom:true,createdAt:Date.now(),updatedAt:Date.now(),...(b.printShop?{print:{bw:Math.max(0,Number(b.printBw)||0),color:Math.max(0,Number(b.printColor)||0),binding:Math.max(0,Number(b.printBinding)||0),doubleSidedDiscount:.2}}:{})};
-  await C.vendorApplications.insertOne({_id:applicationId,status:"pending",reviewTokenHash:crypto.createHash("sha256").update(token).digest("hex"),reviewExpiresAt:days(7),data,createdAt:new Date()});
-  let reviewEmailSent=false,ownerEmailSent=false;
+/* ---------- mobile merchant applications ---------- */
+const merchantApplicationLimit = limitMobile("vendor-application", 10, 60 * minute);
+const htmlEscape = value => String(value).replace(/[&<>"']/g, char => ({
+  "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;",
+})[char]);
+const clockTime = /^(?:[01]\d|2[0-3]):[0-5]\d$/;
+
+app.post("/api/mobile/vendor-applications", merchantApplicationLimit, wrap(async (req, res) => {
+  if (!ADMIN_EMAIL) return fail(res, 503, "Shop registration email is not configured.");
+  const body = req.body || {};
+  const name = str(body.name, 40);
+  const nameKey = DB.nameKey(name);
+  const ownerEmail = canonicalGmail(str(body.ownerEmail, 120));
+  const phone = cleanPhone(body.phone);
+  const category = str(body.category, 24);
+  const location = str(body.location, 60);
+  const openTime = str(body.openTime, 5) || "08:00";
+  const closeTime = str(body.closeTime, 5) || "20:00";
+  if (nameKey.length < 2 || !GMAIL.test(ownerEmail) || !PHONE.test(phone) || !category || !location) {
+    return fail(res, 400, "Enter a shop name, category, location, owner Gmail, and valid mobile number.");
+  }
+  if (!clockTime.test(openTime) || !clockTime.test(closeTime)) {
+    return fail(res, 400, "Enter opening and closing times in 24-hour HH:MM format.");
+  }
+  let print;
+  if (body.printShop === true) {
+    const bw = Number(body.printBw), color = Number(body.printColor), binding = Number(body.printBinding || 0);
+    if (![bw, color, binding].every(n => Number.isFinite(n) && n >= 0 && n <= 1000) || bw <= 0 || color <= 0) {
+      return fail(res, 400, "Enter valid printing prices for black and white and colour, plus an optional binding price.");
+    }
+    print = { bw, color, binding, doubleSidedDiscount: .2 };
+  }
+  if (await C.vendors.findOne({ nameKey })) return fail(res, 409, "This shop is already registered.");
+  await C.vendorApplications.deleteOne({ "data.nameKey": nameKey, status: "pending", reviewExpiresAt: { $lte: new Date() } });
+
+  const token = newToken();
+  const applicationId = appId();
+  const data = {
+    id: newId("v"), nameKey, name, category, location, ownerEmail, phone, whatsapp: "91" + phone,
+    hours: [[openTime, closeTime]], emoji: "🏪", status: "closed", queue: 0, avgServe: 2,
+    note: "", menu: [], ratings: [], custom: true, createdAt: Date.now(), updatedAt: Date.now(),
+    ...(print ? { print } : {}),
+  };
+  const application = {
+    _id: applicationId, status: "pending", reviewTokenHash: sha(token),
+    reviewExpiresAt: days(7), data, createdAt: new Date(),
+  };
   try {
-    if(!ADMIN_EMAIL.includes("@")) throw new Error("ADMIN_EMAIL_missing");
-    const url=(action)=>`${publicBase(req)}/api/mobile/vendor-applications/${applicationId}/decision?token=${token}&action=${action}`;
-    await sendMerchantApplication(ADMIN_EMAIL,data,url("approve"),url("reject"));reviewEmailSent=true;
-  } catch(e) { console.error("Merchant review email failed:",e.message); }
-  try { await sendEmail(ownerEmail,"Campus Vendors: application received",`We received your application for ${name}. We will email you after review.`,`<p>We received your shop application for <b>${name}</b>. We will email you after review.</p>`);ownerEmailSent=true; }
-  catch(e) { console.error("Merchant receipt email failed:",e.message); }
-  res.status(202).json({ok:true,pending:true,applicationId,reviewEmailSent,ownerEmailSent});
+    await C.vendorApplications.insertOne(application);
+  } catch (err) {
+    if (err.code === 11000) return fail(res, 409, "This shop already has an application waiting for review.");
+    throw err;
+  }
+
+  const url = action => `${publicBase(req)}/api/mobile/vendor-applications/${applicationId}/decision?token=${token}&action=${action}`;
+  try {
+    await sendMerchantApplication(ADMIN_EMAIL, data, url("approve"), url("reject"));
+  } catch (err) {
+    await C.vendorApplications.deleteOne({ _id: applicationId, status: "pending" });
+    console.error("Merchant review email failed:", err.message);
+    return fail(res, 502, "The approval email could not be sent. Please submit the application again later.");
+  }
+
+  let ownerEmailSent = false;
+  try {
+    await sendEmail(ownerEmail, "Campus Vendors: application received", `We received your application for ${name}. We will email you after review.`);
+    ownerEmailSent = true;
+  } catch (err) {
+    console.error("Merchant receipt email failed:", err.message);
+  }
+  return res.status(202).json({ pending: true, applicationId, reviewEmailSent: true, ownerEmailSent });
 }));
-app.get("/api/mobile/vendor-applications/:id/decision", wrap(async(req,res)=>{
-  const action=req.query.action==="approve"?"approved":req.query.action==="reject"?"rejected":null;
-  const token=str(req.query.token,100), hash=crypto.createHash("sha256").update(token).digest("hex");
-  const a=action&&await C.vendorApplications.findOne({_id:str(req.params.id,80),status:"pending",reviewTokenHash:hash,reviewExpiresAt:{$gt:new Date()}});
-  if(!a)return res.status(410).send("This shop review link is invalid, expired or already used.");
-  res.type("html").send(`<!doctype html><meta name="viewport" content="width=device-width"><body style="font:16px Arial;background:#f5f0e6;color:#16302a;padding:10vh 8vw"><h1>Confirm ${action}?</h1><p>${String(a.data.name).replace(/[&<>]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]))} · ${a.data.ownerEmail}</p><form method="post" action="/api/mobile/vendor-applications/${encodeURIComponent(req.params.id)}/decision"><input type="hidden" name="token" value="${token}"><input type="hidden" name="action" value="${action}"><button style="background:#e2672b;color:white;padding:14px;border:0;border-radius:10px">Confirm</button></form></body>`);
+
+function reviewFilter(id, token) {
+  if (typeof token !== "string" || !/^[A-Za-z0-9_-]{40,100}$/.test(token)) return null;
+  return { _id: id, status: "pending", reviewTokenHash: sha(token), reviewExpiresAt: { $gt: new Date() } };
+}
+
+function reviewHeaders(req, res, next) {
+  res.set({
+    "Cache-Control": "no-store", "Referrer-Policy": "no-referrer",
+    "Content-Security-Policy": "default-src 'none'; style-src 'unsafe-inline'; form-action 'self'; frame-ancestors 'none'",
+  });
+  next();
+}
+
+app.get("/api/mobile/vendor-applications/:id/decision", reviewHeaders, wrap(async (req, res) => {
+  const action = req.query.action === "approve" ? "approved" : req.query.action === "reject" ? "rejected" : null;
+  const filter = reviewFilter(req.params.id, req.query.token);
+  const application = action && filter && await C.vendorApplications.findOne(filter);
+  if (!application) return res.status(410).send("This review link is invalid, expired, or already used.");
+  const { data } = application;
+  res.type("html").send(`<!doctype html><meta name="viewport" content="width=device-width"><body style="font:16px Arial;background:#f5f0e6;color:#16302a;padding:10vh 8vw"><h1>${action === "approved" ? "Approve" : "Decline"} this shop?</h1><p>${htmlEscape(data.name)} · ${htmlEscape(data.category)} · ${htmlEscape(data.location)}</p><p>${htmlEscape(data.ownerEmail)} · ${htmlEscape(data.phone)}</p><form method="post" action="/api/mobile/vendor-applications/${encodeURIComponent(req.params.id)}/decision"><input type="hidden" name="token" value="${req.query.token}"><input type="hidden" name="action" value="${action}"><button style="background:#16302a;color:white;padding:14px;border:0;border-radius:10px">Confirm</button></form></body>`);
 }));
-app.post("/api/mobile/vendor-applications/:id/decision", express.urlencoded({extended:false}), wrap(async(req,res)=>{
-  const action=["approved","rejected"].includes(req.body.action)?req.body.action:null, token=str(req.body.token,100);
-  const hash=crypto.createHash("sha256").update(token).digest("hex"), filter={_id:str(req.params.id,80),status:"pending",reviewTokenHash:hash,reviewExpiresAt:{$gt:new Date()}};
-  const a=action&&await C.vendorApplications.findOne(filter); if(!a)return res.status(410).send("This shop review link is invalid, expired or already used.");
-  const claim=await C.vendorApplications.updateOne(filter,{$set:{status:"processing"}});if(!claim.modifiedCount)return res.status(410).send("This shop review link was already used.");
-  let status=action;
-  if(action==="approved") { const d=a.data,publicData={...d};delete publicData.ownerEmail;delete publicData.pincode;delete publicData.nameKey;try{await C.vendors.insertOne({_id:d.id,nameKey:DB.nameKey(d.name),pincode:d.pincode,phone:d.phone,ownerEmail:d.ownerEmail,data:publicData,createdAt:new Date()})}catch(e){status="rejected";console.error("Shop approval failed:",e.message)} }
-  await C.vendorApplications.updateOne({_id:a._id,status:"processing"},{$set:{status,reviewedAt:new Date()},$unset:{reviewTokenHash:"",reviewExpiresAt:""}});
-  try{await sendMerchantDecision(a.data.ownerEmail,a.data.name,status==="approved")}catch(e){console.error("Merchant decision email failed:",e.message)}
-  res.send(`Shop ${status}. The merchant has been emailed.`);
+
+app.post("/api/mobile/vendor-applications/:id/decision", reviewHeaders, express.urlencoded({ extended: false, limit: "4kb" }), wrap(async (req, res) => {
+  const action = req.body?.action;
+  const filter = reviewFilter(req.params.id, req.body?.token);
+  if (!filter || !["approved", "rejected"].includes(action)) {
+    return res.status(410).send("This review link is invalid, expired, or already used.");
+  }
+
+  const decided = await DB.transaction(async session => {
+    const application = await C.vendorApplications.findOneAndUpdate(filter, {
+      $set: { status: action, reviewedAt: new Date() },
+      $unset: { reviewTokenHash: "", reviewExpiresAt: "" },
+    }, { session, returnDocument: "after" });
+    if (!application) return null;
+    if (action === "approved") {
+      const { id, nameKey, ownerEmail, pincode, ...data } = application.data;
+      await C.vendors.insertOne({ _id: id, nameKey, ownerEmail, phone: data.phone, data, createdAt: new Date() }, { session });
+    }
+    return application;
+  }).catch(err => {
+    if (err.code === 11000) return false;
+    throw err;
+  });
+  if (decided === false) return res.status(409).send("A shop with that name already exists. You can still decline this application.");
+  if (!decided) return res.status(410).send("This review link is invalid, expired, or already used.");
+
+  try {
+    await sendMerchantDecision(decided.data.ownerEmail, decided.data.name, action === "approved");
+    return res.send(`Shop ${action}. The merchant has been emailed.`);
+  } catch (err) {
+    console.error("Merchant decision email failed:", err.message);
+    return res.send(`Shop ${action}. The email could not be sent. Please notify the merchant.`);
+  }
 }));
 
 /* ---------- vendors ---------- */
@@ -517,18 +955,23 @@ app.put("/api/vendor/orders/:id", wrap(async (req, res) => {
   res.json({ ok: true, strike });
 }));
 
-// App-only vendor transitions apply the three-strike student policy.
-app.put("/api/mobile/vendor/orders/:id", wrap(async(req,res)=>{
-  const v=await needVendor(req,res);if(!v)return;const o=await C.orders.findOne({_id:req.params.id,vendorId:v._id});if(!o)return fail(res,404,"Order not found.");
-  const next={placed:["accepted","rejected"],accepted:["ready"],ready:["collected","no_show"]};const status=String(req.body.status||"");
-  if(!(next[o.status]||[]).includes(status))return fail(res,409,`Can't change this order from ${o.status} to ${status}.`);
-  const updated=await C.orders.updateOne({_id:o._id,status:o.status},{$set:{status,"data.updatedAt":Date.now()}});if(!updated.modifiedCount)return fail(res,409,"This order was just updated.");
-  let strike=null;
-  if(status==="no_show"){const student=await C.students.findOne({_id:o.studentId});strike=await issueStrike(student,o,"not_collected");}
-  if(status==="collected"&&o.data.warningFee)await C.students.updateOne({_id:o.studentId,feeOrderId:o._id},{$set:{feePending:false,feeOrderId:null}});
-  if(status==="rejected"&&o.data.warningFee)await C.students.updateOne({_id:o.studentId,feeOrderId:o._id},{$set:{feePending:true,feeOrderId:null}});
-  if(["collected","rejected","no_show"].includes(status))await C.printFiles.deleteOne({_id:o._id});
-  res.json({ok:true,strike});
+// App vendor transitions use the mobile warning policy.
+app.put("/api/mobile/vendor/orders/:id", orderLimit, wrap(async (req, res) => {
+  const vendor = await needVendor(req, res);
+  if (!vendor) return;
+  const status = req.body?.status;
+  const allowed = Object.keys(NEXT).filter(previous => NEXT[previous].includes(status));
+  if (!allowed.length) return fail(res, 400, "Invalid order status.");
+
+  const result = await DB.transaction(async session => {
+    const order = await changeMobileOrder({
+      _id: req.params.id, vendorId: vendor._id, status: { $in: allowed },
+    }, status, session);
+    if (!order) return null;
+    return { strike: await settleMobileOrder(order, status, session) };
+  });
+  if (!result) return fail(res, 409, "The order changed or is no longer available. Refresh and try again.");
+  return res.json({ ok: true, strike: await notifyStrike(result.strike) });
 }));
 
 app.get("/api/vendor/files/:orderId", wrap(async (req, res) => {
@@ -553,9 +996,114 @@ app.post("/api/vendor/logout", wrap(async (req, res) => {
   res.json({ ok: true });
 }));
 
-/* ---------- start ---------- */
-DB.connect().then(() => {
-  app.listen(PORT, () => console.log(`Campus Vendors on :${PORT} (${DB.kind}; email: ${process.env.BREVO_API_KEY ? "Brevo" : "codes printed here"})`));
-}).catch((e) => { console.error("Database setup failed:", e.message); process.exit(1); });
+/* ---------- mobile privacy and student account deletion ---------- */
+if (MOBILE_ONLY) {
+  const deleteLimit = limitMobile("delete-account", 8, 60 * minute);
+  const deletionPath = "/api/mobile/delete-account";
+  const supportEmail = process.env.SUPPORT_EMAIL || ADMIN_EMAIL;
+  const formParser = express.urlencoded({ extended: false, limit: "4kb" });
+
+  function privacyPage(res, title, contents) {
+    return res.type("html").send(`<!doctype html><meta charset="utf-8"><meta name="viewport" content="width=device-width"><title>${title} | Campus Vendors</title><body style="font:17px/1.55 system-ui;background:#f5f0e6;color:#16302a;max-width:680px;margin:40px auto;padding:0 20px"><header>Campus Vendors</header><main><h1>${title}</h1>${contents}</main></body>`);
+  }
+
+  app.get("/api/mobile/privacy", reviewHeaders, (_req, res) => privacyPage(res, "App privacy", `
+    <p>Campus Vendors collects your Gmail address, name, class, and phone number to verify your account and support pickups. If you use Google sign-in, we use your verified email and Google account identifier to link your account.</p>
+    <p>We store your orders, feedback, and uploaded PDFs to provide the services you request. Your shop receives the information needed to fulfill your order. Print files are removed from the service when orders are collected, declined, cancelled, or marked as missed.</p>
+    <p>We keep a protected identifier derived from sign-in IP addresses for up to 90 days for account security. A match to a banned account can generate an email for review. A protected Gmail identifier may be retained for banned accounts to enforce a ban after deletion.</p>
+    <p>MongoDB Atlas hosts app data, Render runs the service, and Brevo delivers verification and service emails. Google handles Google sign-in. We don’t sell your information or use it for advertising.</p>
+    <p><a href="${deletionPath}">Delete your Campus Vendors account and app data</a>.</p>
+    ${supportEmail ? `<p>For privacy questions or merchant data requests, email <a href="mailto:${htmlEscape(supportEmail)}">${htmlEscape(supportEmail)}</a>.</p>` : ""}
+  `));
+
+  app.get(deletionPath, reviewHeaders, (_req, res) => privacyPage(res, "Delete your student account", `
+    <p>Enter the Gmail address on your Campus Vendors account. We’ll send a confirmation link. Deletion removes your profile, order history, uploads, and feedback and cancels any open orders.</p>
+    <form method="post"><label>Gmail address <input type="email" name="email" maxlength="120" required></label> <button>Send deletion link</button></form>
+    ${supportEmail ? `<p>Merchants can request deletion by emailing <a href="mailto:${htmlEscape(supportEmail)}">${htmlEscape(supportEmail)}</a> from the shop’s registered Gmail.</p>` : ""}
+  `));
+
+  app.post(deletionPath, reviewHeaders, formParser, deleteLimit, wrap(async (req, res) => {
+    const email = canonicalGmail(str(req.body?.email, 120));
+    const student = GMAIL.test(email) && await C.students.findOne({ email });
+    if (student && await withinRateLimit("delete-email", email, 3, 60 * minute)) {
+      const token = newToken();
+      const _id = `mobile:delete:${student._id}`;
+      await C.loginCodes.replaceOne({ _id }, {
+        _id, codeHash: sha(token), expiresAt: new Date(Date.now() + 30 * minute),
+      }, { upsert: true });
+      const link = `${publicBase(req)}${deletionPath}/${student._id}?token=${token}`;
+      try {
+        await sendEmail(email, "Campus Vendors: confirm account deletion", `Confirm deletion of your Campus Vendors account within 30 minutes: ${link}`);
+      } catch (err) {
+        console.error("Could not send deletion email:", err.message);
+        await C.loginCodes.deleteOne({ _id, codeHash: sha(token) });
+      }
+    }
+    return privacyPage(res, "Check your email", "<p>If there is an account with that address, you’ll receive a link to confirm deletion.</p>");
+  }));
+
+  function deleteFilter(id, token) {
+    if (typeof token !== "string" || !/^[A-Za-z0-9_-]{40,100}$/.test(token)) return null;
+    return { _id: `mobile:delete:${id}`, codeHash: sha(token), expiresAt: { $gt: new Date() } };
+  }
+
+  app.get(`${deletionPath}/:id`, reviewHeaders, wrap(async (req, res) => {
+    const filter = deleteFilter(req.params.id, req.query.token);
+    if (!filter || !await C.loginCodes.findOne(filter)) return res.status(410).send("This deletion link has expired or was already used.");
+    return privacyPage(res, "Confirm account deletion", `<p>This permanently deletes your Campus Vendors account and cancels any open orders.</p><form method="post" action="${deletionPath}/${encodeURIComponent(req.params.id)}"><input type="hidden" name="token" value="${req.query.token}"><button>Delete my account</button></form>`);
+  }));
+
+  app.post(`${deletionPath}/:id`, reviewHeaders, formParser, wrap(async (req, res) => {
+    const filter = deleteFilter(req.params.id, req.body?.token);
+    if (!filter) return res.status(410).send("This deletion link has expired or was already used.");
+    const _id = req.params.id;
+    const removed = await DB.transaction(async session => {
+      if (!await C.loginCodes.findOneAndDelete(filter, { session })) return false;
+      const student = await C.students.findOneAndDelete({ _id }, { session });
+      if (!student) return true;
+      const orders = await C.orders.find({ studentId: _id }, { projection: { _id: 1 }, session }).toArray();
+      await C.printFiles.deleteMany({ _id: { $in: orders.map(order => order._id) } }, { session });
+      await C.orders.deleteMany({ studentId: _id }, { session });
+      await C.feedback.deleteMany({ studentId: _id }, { session });
+      await C.noShows.deleteMany({ studentId: _id }, { session });
+      await C.loginEvents.deleteMany({ studentId: _id }, { session });
+      await C.vendors.updateMany({ "data.ratings.studentId": _id }, { $pull: { "data.ratings": { studentId: _id } } }, { session });
+      await C.sessions.deleteMany({ subject: { $in: [_id, student.email] }, kind: { $in: ["student", "pending-mobile"] } }, { session });
+      await C.loginCodes.deleteOne({ _id: `mobile:student:${student.email}` }, { session });
+      return true;
+    });
+    if (!removed) return res.status(410).send("This deletion link has expired or was already used.");
+    return privacyPage(res, "Account deleted", "<p>Your Campus Vendors student account and app data have been deleted.</p>");
+  }));
+}
+
+app.use((err, req, res, next) => {
+  if (res.headersSent) return next(err);
+  if (err.type === "entity.too.large") return fail(res, 413, "The request is too large.");
+  if (err.type === "entity.parse.failed") return fail(res, 400, "The request contains invalid JSON.");
+  console.error("Request failed:", err.message);
+  return fail(res, 500, "Something went wrong. Please try again.");
+});
+
+async function start() {
+  if (MOBILE_ONLY && PRODUCTION) {
+    const required = ["MONGODB_URI", "MONGODB_DB", "BREVO_API_KEY", "BREVO_SENDER_EMAIL", "ADMIN_EMAIL", "MOBILE_AUTH_SECRET", "GOOGLE_CLIENT_ID"];
+    const missing = required.filter(key => !process.env[key]);
+    if (missing.length) throw new Error(`Mobile environment is missing: ${missing.join(", ")}`);
+    if (process.env.MONGODB_DB === "campus_vendors") throw new Error("The mobile service needs a dedicated database.");
+    if (process.env.MOBILE_SEED_DEMO === "1") throw new Error("Demo shops cannot be enabled on the production mobile API.");
+    if (process.env.MOBILE_AUTH_SECRET.length < 32) throw new Error("MOBILE_AUTH_SECRET must be at least 32 characters.");
+    if (!GMAIL.test(ADMIN_EMAIL)) throw new Error("ADMIN_EMAIL must be the shop reviewer’s Gmail address.");
+    if (!GOOGLE_AUDIENCE.endsWith(".apps.googleusercontent.com")) throw new Error("GOOGLE_CLIENT_ID must be a Google OAuth client ID.");
+  }
+  await DB.connect();
+  const host = PRODUCTION ? "0.0.0.0" : (process.env.BIND_ADDRESS || "127.0.0.1");
+  app.listen(PORT, host, () => console.log(`Campus Vendors on ${host}:${PORT} (${DB.kind})`));
+}
+
+if (require.main === module) start().catch(err => {
+  console.error("Startup failed:", err.message);
+  process.exit(1);
+});
 
 module.exports = { app, canonicalGmail };

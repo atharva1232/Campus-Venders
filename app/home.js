@@ -47,7 +47,7 @@ function ServiceCard({ title, description, icon, tint, onPress }) {
   );
 }
 
-export function Welcome({ goEmail, goGoogle, goMerchant, googleNotice, sessionNotice, busy }) {
+export function Welcome({ goEmail, goGoogle, goMerchant, googleNotice, sessionNotice, busy, openPrivacy }) {
   return (
     <ScrollView style={S.scroll} contentContainerStyle={styles.content}>
       <View style={styles.welcomeHero}>
@@ -79,6 +79,9 @@ export function Welcome({ goEmail, goGoogle, goMerchant, googleNotice, sessionNo
       <Pressable accessibilityRole="button" onPress={goMerchant} style={({ pressed }) => [styles.merchantLink, pressed && styles.pressed]}>
         <Text style={styles.textButtonLabel}>For merchants</Text>
         <Icon name="chevron-forward" size={17} color={colors.orangeDark} />
+      </Pressable>
+      <Pressable accessibilityRole="link" onPress={openPrivacy}>
+        <Text style={[S.caption, S.center]}>Privacy and account data</Text>
       </Pressable>
     </ScrollView>
   );

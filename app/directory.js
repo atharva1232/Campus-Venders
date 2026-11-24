@@ -108,9 +108,11 @@ export function Explore({ shops, visible, category, categories, setCategory, que
 
 export function ShopDetails({
   shop, cart, changeQuantity, warningFeePercent, placeOrder, money,
-  printFile, printPages, printCopies, setPrintPages, setPrintCopies, pickPrintFile, submitPrint,
+  printFile, printPages, printCopies, setPrintPages, setPrintCopies, pickPrintFile, submitPrint, submittingOrder,
 }) {
   const subtotal = cart.reduce((sum, item) => sum + item.price * item.qty, 0);
+  const withWarningFee = amount => amount + Math.round(amount * (warningFeePercent || 0)) / 100;
+  const printSubtotal = (Number(printPages) || 1) * (Number(printCopies) || 1) * (shop.print?.bw || 0);
   return (
     <>
       <ScrollView style={S.scroll} keyboardShouldPersistTaps="handled" contentContainerStyle={S.content}>
@@ -152,13 +154,14 @@ export function ShopDetails({
         )}
         {shop.print && (
           <Panel title="Print a PDF">
-            <Action label={printFile?.name || 'Choose PDF'} icon="document-attach-outline" tone="secondary" onPress={pickPrintFile} />
+            <Action label={printFile?.name || 'Choose PDF'} icon="document-attach-outline" tone="secondary" onPress={pickPrintFile} disabled={submittingOrder} />
             <View style={S.wrapRow}>
               <Field style={{ flex: 1 }} label="Pages" keyboardType="number-pad" value={printPages} onChangeText={setPrintPages} />
               <Field style={{ flex: 1 }} label="Copies" keyboardType="number-pad" value={printCopies} onChangeText={setPrintCopies} />
             </View>
-            <Text style={S.body}>Black and white · Single sided · Est. {money((Number(printPages) || 1) * (Number(printCopies) || 1) * (shop.print.bw || 0))}</Text>
-            <Action label="Submit print job" onPress={submitPrint} disabled={!printFile} />
+            <Text style={S.body}>Black and white · Single sided · Est. {money(withWarningFee(Math.round(printSubtotal)))}</Text>
+            {warningFeePercent > 0 && <Text style={S.caption}>Estimate includes a {warningFeePercent}% missed pickup fee.</Text>}
+            <Action label={submittingOrder ? 'Submitting…' : 'Submit print job'} onPress={submitPrint} disabled={!printFile || submittingOrder} />
           </Panel>
         )}
         {!shop.menu?.length && !shop.print && (
@@ -167,11 +170,12 @@ export function ShopDetails({
       </ScrollView>
       {cart.length > 0 && (
         <View style={S.checkout}>
-          {warningFeePercent > 0 && <Text style={S.caption}>A {warningFeePercent}% warning fee goes to the shop.</Text>}
+          {warningFeePercent > 0 && <Text style={S.caption}>A {warningFeePercent}% missed pickup fee goes to the shop.</Text>}
           <Action
-            label={`Place order · ${money(subtotal + Math.ceil(subtotal * (warningFeePercent || 0) / 100))}`}
+            label={submittingOrder ? 'Placing order…' : `Place order · ${money(withWarningFee(subtotal))}`}
             icon="basket-outline"
             onPress={placeOrder}
+            disabled={submittingOrder}
           />
         </View>
       )}

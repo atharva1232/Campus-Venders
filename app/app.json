@@ -13,7 +13,16 @@
       "resizeMode": "contain"
     },
     "android": {
-      "package": "com.campusvendors.mobile"
+      "package": "com.campusvendors.mobile",
+      "blockedPermissions": [
+        "android.permission.READ_EXTERNAL_STORAGE",
+        "android.permission.WRITE_EXTERNAL_STORAGE",
+        "android.permission.SYSTEM_ALERT_WINDOW"
+      ],
+      "adaptiveIcon": {
+        "foregroundImage": "./assets/adaptive-icon.png",
+        "backgroundColor": "#16302a"
+      }
     },
     "ios": {
       "bundleIdentifier": "com.campusvendors.mobile"
@@ -22,6 +31,7 @@
       "eas": {
         "projectId": "55103d4c-0757-40eb-8fea-b6bfd74e759c"
       }
-    }
+    },
+    "icon": "./assets/icon.png"
   }
 }

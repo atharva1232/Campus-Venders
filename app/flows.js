@@ -55,8 +55,8 @@ export function Orders({ signedIn, orders, goAccount, goExplore, money, cancel, 
 
 export function Account({
   me, signedIn, authView, pending, email, code, name, cls, phone, setEmail, setCode, setName, setCls, setPhone,
-  codeSent, devCode, busy, error, toggleAuthView, editEmail, submit, googleSignIn,
-  feedback, setFeedback, sendFeedback, logout,
+  codeSent, devCode, busy, error, toggleAuthView, editEmail, submit, resendCode, googleSignIn,
+  feedback, setFeedback, sendFeedback, logout, openPrivacy, deleteAccount,
 }) {
   const needsProfile = !!pending || authView === 'signup';
   const title = signedIn ? 'Your account' : pending ? 'Finish your profile' : codeSent ? 'Check your inbox' : authView === 'signup' ? 'Create an account' : 'Sign in';
@@ -74,6 +74,8 @@ export function Account({
             <Action label="Send feedback" icon="paper-plane-outline" tone="secondary" onPress={sendFeedback} disabled={feedback.trim().length < 5} />
           </Panel>
           <Action label="Sign out" icon="log-out-outline" tone="secondary" onPress={logout} />
+          <Action label="Privacy and account data" icon="shield-checkmark-outline" tone="secondary" onPress={openPrivacy} />
+          <Action label="Delete account" icon="trash-outline" tone="danger" onPress={deleteAccount} />
         </>
       ) : (
         <Panel description={pending ? undefined : codeSent ? `Enter the six-digit code sent to ${email.trim()}.` : 'Use your Gmail address to receive a one-time sign-in code.'}>
@@ -92,7 +94,8 @@ export function Account({
             </>
           )}
           {error ? <Text accessibilityRole="alert" style={S.feedback}>{error}</Text> : null}
-          <Action label={busy ? 'Please wait…' : action} onPress={submit} disabled={busy} />
+          <Action label={busy ? 'Please wait…' : action} onPress={submit} disabled={busy || (codeSent && !pending && code.length !== 6)} />
+          {codeSent && !pending && <Action label="Request another code" tone="secondary" onPress={resendCode} disabled={busy} />}
           {googleSignIn && !pending && !codeSent && authView === 'login' && <Action label="Continue with Google" icon="logo-google" tone="secondary" onPress={googleSignIn} disabled={busy} />}
           {!pending && (
             <Pressable accessibilityRole="button" onPress={codeSent ? editEmail : toggleAuthView}>
@@ -114,9 +117,10 @@ const statusActions = {
 
 export function Merchant({
   vendor, orders, form, setForm, busy, error, signIn, apply, money, updateShop,
+  merchantCode, resetMerchantCode, openPrivacy,
   shopNote, setShopNote, itemName, setItemName, itemPrice, setItemPrice, addItem, updateOrder, downloadPrint, signOut,
 }) {
-  const [credentials, setCredentials] = useState({ shop: '', phone: '', pincode: '' });
+  const [credentials, setCredentials] = useState({ shop: '', email: '', code: '' });
 
   function loginField(label, key, options = {}) {
     return <Field label={label} value={credentials[key]} onChangeText={value => setCredentials(previous => ({ ...previous, [key]: value }))} {...options} />;
@@ -172,21 +176,35 @@ export function Merchant({
             </Panel>
           ))}
           <Action label="Sign out of shop" icon="log-out-outline" tone="secondary" onPress={signOut} />
+          <Action label="Privacy and account data" icon="shield-checkmark-outline" tone="secondary" onPress={openPrivacy} />
         </>
       ) : (
         <>
-          <Panel title="Merchant sign-in">
-            {loginField('Shop name', 'shop')}
-            {loginField('Shop PIN', 'pincode', { placeholder: 'Six digits', keyboardType: 'number-pad', secureTextEntry: true, maxLength: 6 })}
-            {loginField('Shop phone', 'phone', { keyboardType: 'phone-pad' })}
-            <Action label={busy ? 'Please wait…' : 'Sign in to shop'} icon="log-in-outline" onPress={() => signIn(credentials)} disabled={busy} />
+          <Panel title="Merchant sign-in" description={merchantCode ? `Enter the six-digit code sent to ${credentials.email.trim()}.` : 'Use the Gmail address on your approved shop application.'}>
+            {merchantCode ? (
+              <>
+                {loginField('Six-digit code', 'code', { keyboardType: 'number-pad', maxLength: 6, autoComplete: 'one-time-code' })}
+                {merchantCode.devCode ? <Text style={S.caption}>Local development code: {merchantCode.devCode}</Text> : null}
+              </>
+            ) : (
+              <>
+                {loginField('Shop name', 'shop')}
+                {loginField('Owner Gmail', 'email', { keyboardType: 'email-address', autoCapitalize: 'none', autoComplete: 'email' })}
+              </>
+            )}
+            <Action label={busy ? 'Please wait…' : merchantCode ? 'Verify code' : 'Email me a sign-in code'} icon="log-in-outline"
+              onPress={() => signIn(credentials)} disabled={busy || (!!merchantCode && credentials.code.length !== 6)}
+            />
+            {merchantCode && <Action label="Use a different shop or request a new code" tone="secondary" disabled={busy} onPress={() => {
+              setCredentials(previous => ({ ...previous, code: '' }));
+              resetMerchantCode();
+            }} />}
           </Panel>
           <Panel title="Register a shop" description="Your shop appears in the directory after approval by email.">
             {field('Shop name', 'name')}
             {field('Category', 'category', { placeholder: 'Food, print, stationery…' })}
             {field('Location', 'location')}
             {field('Phone', 'phone', { keyboardType: 'phone-pad' })}
-            {field('Choose a shop PIN', 'pincode', { placeholder: 'Six digits', keyboardType: 'number-pad', secureTextEntry: true, maxLength: 6 })}
             {field('Owner email', 'ownerEmail', { keyboardType: 'email-address', autoCapitalize: 'none' })}
             <View style={S.wrapRow}>
               {field('Opens at', 'openTime', { placeholder: '08:00', style: { flex: 1 } })}
