@@ -1,0 +1,13 @@
+{
+  "expo": {
+    "name": "Campus Vendors",
+    "slug": "campus-vendors-mobile",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "userInterfaceStyle": "light",
+    "backgroundColor": "#f5f0e6",
+    "splash": { "backgroundColor": "#16302a", "resizeMode": "contain" },
+    "android": { "package": "com.campusvendors.mobile" },
+    "ios": { "bundleIdentifier": "com.campusvendors.mobile" }
+  }
+}
