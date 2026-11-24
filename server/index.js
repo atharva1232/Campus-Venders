@@ -8,12 +8,14 @@ const path = require("path");
 const express = require("express");
 const cors = require("cors");
 const DB = require("./db");
-const { sendCode } = require("./mail");
+const { sendCode, sendEmail, sendMerchantApplication, sendBanNotice, sendMerchantDecision } = require("./mail");
 
 const PORT = Number(process.env.PORT) || 10000;
 const ORIGINS = (process.env.ALLOWED_ORIGINS || "http://localhost:8000").split(",").map((s) => s.trim()).filter(Boolean);
 const CODE_TTL_MIN = 10;
 const SESSION_DAYS = 30;
+const WARNING_FEE_PERCENT = { 1: 5, 2: 10 };
+const ADMIN_EMAIL = String(process.env.ADMIN_EMAIL || "").trim().toLowerCase();
 // Local only (never on Render): with no Brevo key, the code is shown in the response so you can test.
 const DEV = !process.env.RENDER && !process.env.BREVO_API_KEY;
 
@@ -55,7 +57,7 @@ async function sessionSubject(token, kind) {
 }
 const bearer = (req) => { const h = req.get("authorization") || ""; return h.startsWith("Bearer ") ? h.slice(7) : null; };
 
-const studentOut = (s) => ({ id: s._id, email: s.email, name: s.name, cls: s.cls, phone: s.phone, strikes: s.strikes || 0, blocked: !!s.blocked });
+const studentOut = (s) => ({ id: s._id, email: s.email, name: s.name, cls: s.cls, phone: s.phone, strikes: s.strikes || 0, blocked: !!s.blocked, feePending: !!s.feePending, warningFeePercent: s.feePending && !s.feeOrderId ? WARNING_FEE_PERCENT[s.strikes] || 0 : 0, feeOrderId: s.feeOrderId || null });
 async function loadStudent(req) {
   const id = await sessionSubject(bearer(req), "student");
   return id ? C.students.findOne({ _id: id }) : null;
@@ -79,6 +81,36 @@ const orderOut = (o) => ({ ...o.data, id: o._id, status: o.status });
 const feedbackOut = (f) => ({ ...f.data, id: f._id, status: f.status });
 const noShowsOf = async (studentId) => (await C.noShows.find({ studentId }).sort({ at: -1 }).toArray())
   .map((n) => ({ order_id: n._id, token: n.token, shop: n.shop, at: n.at }));
+const appId = () => "va" + Date.now().toString(36) + crypto.randomBytes(5).toString("hex");
+const publicBase = (req) => String(process.env.PUBLIC_URL || process.env.RENDER_EXTERNAL_URL || `${req.protocol}://${req.get("host")}`).replace(/\/$/, "");
+async function logStudentIp(req, student, method) {
+  const ip = String(req.ip || req.socket?.remoteAddress || "unknown").slice(0, 80);
+  const old = await C.loginEvents.find({ ip, email: { $ne: student.email }, createdAt: { $gt: days(-90) } }).sort({ createdAt: -1 }).limit(100).toArray();
+  let related = null;
+  for (const event of old) if (await C.blockedEmails.findOne({ _id: event.email })) { related = event; break; }
+  if (related) {
+    const reason = `Sign-in IP matches a recently banned account (${related.email})`;
+    await C.students.updateOne({ _id: student._id }, { $set: { blocked: true } });
+    await C.blockedEmails.updateOne({ _id: student.email }, { $setOnInsert: { reason, at: new Date() } }, { upsert: true });
+    try { await sendBanNotice(student.email, student.name, reason); } catch(e) { console.error("Ban email failed:",e.message); }
+    if (ADMIN_EMAIL.includes("@")) try { await sendEmail(ADMIN_EMAIL,`Account suspended: ${student.email}`,`${student.email} was banned. Reason: ${reason}. IP: ${ip}`,`<p>${student.email} was banned.</p><p>Reason: ${reason}</p><p>IP: ${ip}</p>`); } catch(e) { console.error("IP alert email failed:",e.message); }
+    return { blocked: true, reason };
+  }
+  await C.loginEvents.insertOne({ email: student.email, studentId: student._id, ip, method, userAgent: String(req.get("user-agent")||"").slice(0,200), createdAt: new Date(), expiresAt: days(90) });
+  return { blocked: false };
+}
+async function issueStrike(student, order, reason) {
+  await C.noShows.updateOne({ _id: order._id }, { $setOnInsert: { studentId: student._id, token: order.data.token, shop: order.data.shopName || "Shop", at: new Date(), reason } }, { upsert: true });
+  const strikes = await C.noShows.countDocuments({ studentId: student._id });
+  const blocked = strikes >= 3, feePending = !blocked;
+  await C.students.updateOne({ _id: student._id }, { $set: { strikes, blocked, feePending, feeOrderId: null } });
+  if (blocked) {
+    const why = "Three order cancellations or missed pickups";
+    await C.blockedEmails.updateOne({ _id: student.email }, { $setOnInsert: { reason: why, at: new Date() } }, { upsert: true });
+    try { await sendBanNotice(student.email, student.name, why); } catch(e) { console.error("Ban email failed:",e.message); }
+  }
+  return { strikes, blocked, feePercent: WARNING_FEE_PERCENT[strikes] || 0 };
+}
 
 /* ---------- the website (only its own files are public) ---------- */
 const ROOT = path.join(__dirname, "..");
@@ -143,6 +175,43 @@ app.post("/api/auth/verify", wrap(async (req, res) => {
     s = { ...s, name: d.name, cls: d.cls, phone: d.phone };
   }
   res.json({ token: await newSession("student", s._id), student: studentOut(s) });
+}));
+
+// Mobile-only OTP completion adds IP-based account protection without changing the website login flow.
+app.post("/api/mobile/auth/verify", wrap(async (req,res)=>{
+  const email=canonicalGmail(str(req.body.email,120)), code=str(req.body.code,10).replace(/\D/g,"");
+  const c=await C.loginCodes.findOne({_id:email}); if(!c||c.expiresAt<new Date())return fail(res,400,"That code expired. Ask for a new one.");
+  if(c.attempts>=5)return fail(res,429,"Too many wrong tries. Ask for a new code.");
+  if(c.codeHash!==sha(email+":"+code)){await C.loginCodes.updateOne({_id:email},{$inc:{attempts:1}});return fail(res,400,"That code is incorrect.");}
+  await C.loginCodes.deleteOne({_id:email}); if(await isBlocked(email))return fail(res,403,"This account is banned from ordering.",{blocked:true});
+  let s=await C.students.findOne({email}); const d=c.details||req.body.details;
+  if(!s&&!d)return res.json({needsProfile:true,pendingToken:await newSession("pending-mobile",email,1),email});
+  if(!s){s={_id:newId("s"),email,name:str(d.name,40),cls:str(d.cls,30),phone:cleanPhone(d.phone),strikes:0,blocked:false,createdAt:new Date()};await C.students.insertOne(s);}
+  else if(d){s={...s,name:str(d.name,40)||s.name,cls:str(d.cls,30)||s.cls,phone:cleanPhone(d.phone)||s.phone};await C.students.updateOne({_id:s._id},{$set:{name:s.name,cls:s.cls,phone:s.phone}});}
+  const security=await logStudentIp(req,s,"mobile_otp"); if(security.blocked)return fail(res,403,security.reason,{blocked:true});
+  res.json({token:await newSession("student",s._id),student:studentOut(s)});
+}));
+app.post("/api/mobile/auth/finish", wrap(async(req,res)=>{
+  const email=await sessionSubject(req.body.pendingToken,"pending-mobile"); if(!email)return fail(res,401,"Start again and request a fresh code.");
+  if(await isBlocked(email))return fail(res,403,"This account is banned from ordering.",{blocked:true});
+  const name=str(req.body.name,40),cls=str(req.body.cls,30),phone=cleanPhone(req.body.phone);
+  if(name.length<2||!cls||!PHONE.test(phone))return fail(res,400,"Enter name, class and a valid mobile number.");
+  await C.students.updateOne({email},{$set:{name,cls,phone},$setOnInsert:{_id:newId("s"),email,strikes:0,blocked:false,createdAt:new Date()}},{upsert:true});
+  const s=await C.students.findOne({email}); await C.sessions.deleteOne({_id:sha(req.body.pendingToken)});
+  const security=await logStudentIp(req,s,"mobile_otp"); if(security.blocked)return fail(res,403,security.reason,{blocked:true});
+  res.json({token:await newSession("student",s._id),student:studentOut(s)});
+}));
+app.post("/api/mobile/auth/google", wrap(async(req,res)=>{
+  const idToken=str(req.body.idToken,5000);if(!idToken)return fail(res,400,"Google sign-in did not return an ID token.");
+  const verify=await fetch(`https://oauth2.googleapis.com/tokeninfo?id_token=${encodeURIComponent(idToken)}`);if(!verify.ok)return fail(res,401,"Google sign-in could not be verified.");
+  const profile=await verify.json(),audiences=[process.env.GOOGLE_CLIENT_ID,process.env.GOOGLE_ANDROID_CLIENT_ID,process.env.GOOGLE_IOS_CLIENT_ID].filter(Boolean);
+  if(!audiences.length)return fail(res,503,"Google sign-in is not configured on the server.");
+  if(!profile.email_verified||!GMAIL.test(profile.email||"")||!audiences.includes(profile.aud))return fail(res,401,"Use a verified Gmail account authorized for this app.");
+  const email=canonicalGmail(profile.email);if(await isBlocked(email))return fail(res,403,"This account is banned from ordering.",{blocked:true});
+  let s=await C.students.findOne({email});if(!s){s={_id:newId("s"),email,name:str(profile.name,40)||email.split("@")[0],cls:"",phone:"",strikes:0,blocked:false,createdAt:new Date()};await C.students.insertOne(s);}
+  if(!s.phone||!s.cls)return res.json({needsProfile:true,pendingToken:await newSession("pending-mobile",email,1),email});
+  const security=await logStudentIp(req,s,"google");if(security.blocked)return fail(res,403,security.reason,{blocked:true});
+  res.json({token:await newSession("student",s._id),student:studentOut(s)});
 }));
 
 // 2b. Finish a verified account that had no details yet.
@@ -264,6 +333,37 @@ app.post("/api/orders", wrap(async (req, res) => {
   res.json({ order: { ...data, status: "placed" } });
 }));
 
+// App-only order API applies the warning fee policy while the website keeps its original flow.
+app.post("/api/mobile/orders", wrap(async(req,res)=>{
+  const s=await needStudent(req,res);if(!s)return;const b=req.body||{},row=await C.vendors.findOne({_id:str(b.vendorId,60)}),v=row&&row.data;
+  if(!v)return fail(res,404,"Shop not found.");if(v.status==="closed")return fail(res,409,`${v.name} is closed right now.`);
+  const items=[];let print=null,file=null,subtotal=0;
+  if(b.type==="print") {
+    if(!v.print)return fail(res,400,"This shop doesn't take print jobs.");const p=b.print||{},pages=Math.min(999,Math.max(1,Number(p.pages)||1)),copies=Math.min(50,Math.max(1,Number(p.copies)||1)),color=p.color==="color"?"color":"bw",sides=p.sides==="double"?"double":"single",binding=p.binding==="spiral"?"spiral":"none";
+    const printing=pages*copies*(color==="color"?v.print.color:v.print.bw);subtotal=Math.round(printing-(sides==="double"?printing*(v.print.doubleSidedDiscount||0):0)+(binding==="spiral"?(v.print.binding||0)*copies:0));
+    items.push({name:`${pages} pg × ${copies} · ${color} · ${sides}`,price:subtotal,qty:1});file=typeof b.file==="string"&&b.file.startsWith("data:application/pdf;base64,")?b.file:null;if(file&&file.length>14*1024*1024)return fail(res,413,"PDF is larger than 10 MB.");
+    print={fileName:str(p.fileName,120)||"file.pdf",size:Number(p.size)||0,pages,copies,color,sides,binding,hasFile:!!file};
+  } else {
+    for(const it of Array.isArray(b.items)?b.items.slice(0,50):[]){const m=(v.menu||[]).find(x=>x.id===it.id),qty=Math.min(50,Math.max(1,Number(it.qty)||0));if(m&&m.inStock&&qty)items.push({id:m.id,name:m.name,price:m.price,qty});}
+    if(!items.length)return fail(res,400,"Your cart is empty or these items are out of stock.");subtotal=items.reduce((a,i)=>a+i.price*i.qty,0);
+  }
+  const percent=s.feePending&&!s.feeOrderId?(WARNING_FEE_PERCENT[s.strikes]||0):0,fee=percent?Math.ceil(subtotal*percent/100):0,total=subtotal+fee;
+  const id=newId("o"),token=(v.name.replace(/[^A-Za-z]/g,"").slice(0,1).toUpperCase()||"T")+"-"+(await DB.nextSeq("order",101));
+  const data={id,token,type:b.type==="print"?"print":"food",vendorId:row._id,items,subtotal,total,...(fee?{warningFee:{percent,amount:fee,forMerchant:true}}:{}),pickup:/^(ASAP|\d{2}:\d{2})$/.test(b.pickup)?b.pickup:"ASAP",note:str(b.note,100),student:{id:s._id,name:s.name,cls:s.cls,phone:s.phone,email:s.email},createdAt:Date.now(),...(print?{print}:{})};
+  await C.orders.insertOne({_id:id,vendorId:row._id,studentId:s._id,status:"placed",data,createdAt:new Date()});if(fee)await C.students.updateOne({_id:s._id},{$set:{feeOrderId:id}});if(file)await C.printFiles.insertOne({_id:id,dataUrl:file});
+  res.json({order:{...data,status:"placed"}});
+}));
+
+app.put("/api/mobile/orders/:id/cancel", wrap(async (req, res) => {
+  const s = await needStudent(req, res); if (!s) return;
+  const o = await C.orders.findOne({ _id: req.params.id, studentId: s._id, status: "placed" });
+  if (!o) return fail(res, 409, "Only new orders can be cancelled.");
+  const changed = await C.orders.updateOne({ _id: o._id, status: "placed" }, { $set: { status: "cancelled" } });
+  if (!changed.modifiedCount) return fail(res, 409, "This order was just updated.");
+  const strike = await issueStrike(s, o, "cancelled");
+  res.json({ ok: true, strike });
+}));
+
 app.post("/api/orders/:id/rate", wrap(async (req, res) => {
   const s = await needStudent(req, res); if (!s) return;
   const o = await C.orders.findOne({ _id: req.params.id, studentId: s._id });
@@ -287,6 +387,45 @@ app.post("/api/feedback", wrap(async (req, res) => {
     message, studentId: s._id, name: s.name, cls: s.cls, contact: `${s.phone} · ${s.email}`, at: Date.now() };
   await C.feedback.insertOne({ _id: id, vendorId, studentId: s._id, status: "open", data, createdAt: new Date() });
   res.json({ feedback: { ...data, status: "open" } });
+}));
+
+/* ---------- mobile merchant application, reviewed from expiring email links ---------- */
+app.post("/api/mobile/vendor-applications", wrap(async (req, res) => {
+  const b=req.body||{}, name=str(b.name,40), ownerEmail=canonicalGmail(str(b.ownerEmail,120)), phone=cleanPhone(b.phone), pincode=str(b.pincode,6), openTime=str(b.openTime,5)||"08:00", closeTime=str(b.closeTime,5)||"20:00";
+  if(name.length<2||!GMAIL.test(ownerEmail)||!/^\d{10}$/.test(phone)||!/^\d{6}$/.test(pincode)) return fail(res,400,"Enter shop name, owner Gmail, valid phone and campus pincode.");
+  if(!/^\d{2}:\d{2}$/.test(openTime)||!/^\d{2}:\d{2}$/.test(closeTime))return fail(res,400,"Opening and closing time must use HH:MM format.");
+  if(await C.vendors.findOne({nameKey:DB.nameKey(name)})||await C.vendorApplications.findOne({"data.nameKey":DB.nameKey(name),status:"pending"})) return fail(res,409,"This shop already exists or is awaiting review.");
+  const id=name.toLowerCase().replace(/[^a-z0-9]+/g,"-").replace(/^-|-$/g,"").slice(0,24)||"shop";
+  const token=crypto.randomBytes(32).toString("hex"), applicationId=appId();
+  const data={id,name,nameKey:DB.nameKey(name),category:str(b.category,24)||"Shops",emoji:"🏪",location:str(b.location,60),distance:0,phone,whatsapp:"91"+phone,hours:[[openTime,closeTime]],pincode,ownerEmail,status:"closed",queue:0,avgServe:2,note:"",menu:[],ratings:[],custom:true,createdAt:Date.now(),updatedAt:Date.now(),...(b.printShop?{print:{bw:Math.max(0,Number(b.printBw)||0),color:Math.max(0,Number(b.printColor)||0),binding:Math.max(0,Number(b.printBinding)||0),doubleSidedDiscount:.2}}:{})};
+  await C.vendorApplications.insertOne({_id:applicationId,status:"pending",reviewTokenHash:crypto.createHash("sha256").update(token).digest("hex"),reviewExpiresAt:days(7),data,createdAt:new Date()});
+  let reviewEmailSent=false,ownerEmailSent=false;
+  try {
+    if(!ADMIN_EMAIL.includes("@")) throw new Error("ADMIN_EMAIL_missing");
+    const url=(action)=>`${publicBase(req)}/api/mobile/vendor-applications/${applicationId}/decision?token=${token}&action=${action}`;
+    await sendMerchantApplication(ADMIN_EMAIL,data,url("approve"),url("reject"));reviewEmailSent=true;
+  } catch(e) { console.error("Merchant review email failed:",e.message); }
+  try { await sendEmail(ownerEmail,"Campus Vendors: application received",`We received your application for ${name}. We will email you after review.`,`<p>We received your shop application for <b>${name}</b>. We will email you after review.</p>`);ownerEmailSent=true; }
+  catch(e) { console.error("Merchant receipt email failed:",e.message); }
+  res.status(202).json({ok:true,pending:true,applicationId,reviewEmailSent,ownerEmailSent});
+}));
+app.get("/api/mobile/vendor-applications/:id/decision", wrap(async(req,res)=>{
+  const action=req.query.action==="approve"?"approved":req.query.action==="reject"?"rejected":null;
+  const token=str(req.query.token,100), hash=crypto.createHash("sha256").update(token).digest("hex");
+  const a=action&&await C.vendorApplications.findOne({_id:str(req.params.id,80),status:"pending",reviewTokenHash:hash,reviewExpiresAt:{$gt:new Date()}});
+  if(!a)return res.status(410).send("This shop review link is invalid, expired or already used.");
+  res.type("html").send(`<!doctype html><meta name="viewport" content="width=device-width"><body style="font:16px Arial;background:#f5f0e6;color:#16302a;padding:10vh 8vw"><h1>Confirm ${action}?</h1><p>${String(a.data.name).replace(/[&<>]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]))} · ${a.data.ownerEmail}</p><form method="post" action="/api/mobile/vendor-applications/${encodeURIComponent(req.params.id)}/decision"><input type="hidden" name="token" value="${token}"><input type="hidden" name="action" value="${action}"><button style="background:#e2672b;color:white;padding:14px;border:0;border-radius:10px">Confirm</button></form></body>`);
+}));
+app.post("/api/mobile/vendor-applications/:id/decision", express.urlencoded({extended:false}), wrap(async(req,res)=>{
+  const action=["approved","rejected"].includes(req.body.action)?req.body.action:null, token=str(req.body.token,100);
+  const hash=crypto.createHash("sha256").update(token).digest("hex"), filter={_id:str(req.params.id,80),status:"pending",reviewTokenHash:hash,reviewExpiresAt:{$gt:new Date()}};
+  const a=action&&await C.vendorApplications.findOne(filter); if(!a)return res.status(410).send("This shop review link is invalid, expired or already used.");
+  const claim=await C.vendorApplications.updateOne(filter,{$set:{status:"processing"}});if(!claim.modifiedCount)return res.status(410).send("This shop review link was already used.");
+  let status=action;
+  if(action==="approved") { const d=a.data,publicData={...d};delete publicData.ownerEmail;delete publicData.pincode;delete publicData.nameKey;try{await C.vendors.insertOne({_id:d.id,nameKey:DB.nameKey(d.name),pincode:d.pincode,phone:d.phone,ownerEmail:d.ownerEmail,data:publicData,createdAt:new Date()})}catch(e){status="rejected";console.error("Shop approval failed:",e.message)} }
+  await C.vendorApplications.updateOne({_id:a._id,status:"processing"},{$set:{status,reviewedAt:new Date()},$unset:{reviewTokenHash:"",reviewExpiresAt:""}});
+  try{await sendMerchantDecision(a.data.ownerEmail,a.data.name,status==="approved")}catch(e){console.error("Merchant decision email failed:",e.message)}
+  res.send(`Shop ${status}. The merchant has been emailed.`);
 }));
 
 /* ---------- vendors ---------- */
@@ -375,6 +514,20 @@ app.put("/api/vendor/orders/:id", wrap(async (req, res) => {
     strike = { strikes: s.strikes, blocked: s.blocked, name: s.name };
   }
   res.json({ ok: true, strike });
+}));
+
+// App-only vendor transitions apply the three-strike student policy.
+app.put("/api/mobile/vendor/orders/:id", wrap(async(req,res)=>{
+  const v=await needVendor(req,res);if(!v)return;const o=await C.orders.findOne({_id:req.params.id,vendorId:v._id});if(!o)return fail(res,404,"Order not found.");
+  const next={placed:["accepted","rejected"],accepted:["ready"],ready:["collected","no_show"]};const status=String(req.body.status||"");
+  if(!(next[o.status]||[]).includes(status))return fail(res,409,`Can't change this order from ${o.status} to ${status}.`);
+  const updated=await C.orders.updateOne({_id:o._id,status:o.status},{$set:{status,"data.updatedAt":Date.now()}});if(!updated.modifiedCount)return fail(res,409,"This order was just updated.");
+  let strike=null;
+  if(status==="no_show"){const student=await C.students.findOne({_id:o.studentId});strike=await issueStrike(student,o,"not_collected");}
+  if(status==="collected"&&o.data.warningFee)await C.students.updateOne({_id:o.studentId,feeOrderId:o._id},{$set:{feePending:false,feeOrderId:null}});
+  if(status==="rejected"&&o.data.warningFee)await C.students.updateOne({_id:o.studentId,feeOrderId:o._id},{$set:{feePending:true,feeOrderId:null}});
+  if(["collected","rejected","no_show"].includes(status))await C.printFiles.deleteOne({_id:o._id});
+  res.json({ok:true,strike});
 }));
 
 app.get("/api/vendor/files/:orderId", wrap(async (req, res) => {

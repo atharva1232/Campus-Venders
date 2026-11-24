@@ -6,7 +6,7 @@ const path = require("path");
 const vm = require("vm");
 const { MongoClient } = require("mongodb");
 
-const col = {}; // students, blockedEmails, loginCodes, sessions, vendors, orders, printFiles, noShows, feedback, counters
+  const col = {}; // students, blockedEmails, loginCodes, sessions, vendors, applications, orders, printFiles, noShows, feedback, counters
 let kind = "";
 
 async function connect() {
@@ -29,7 +29,7 @@ async function connect() {
   const db = client.db(process.env.MONGODB_DB || "campus_vendors");
   for (const [k, name] of Object.entries({
     students: "students", blockedEmails: "blocked_emails", loginCodes: "login_codes", sessions: "sessions",
-    vendors: "vendors", orders: "orders", printFiles: "print_files", noShows: "no_shows", feedback: "feedback", counters: "counters",
+    vendors: "vendors", vendorApplications: "vendor_applications", orders: "orders", printFiles: "print_files", noShows: "no_shows", feedback: "feedback", counters: "counters", loginEvents: "login_events",
   })) col[k] = db.collection(name);
 
   await col.students.createIndex({ email: 1 }, { unique: true });
@@ -37,6 +37,9 @@ async function connect() {
   await col.orders.createIndex({ vendorId: 1, createdAt: -1 });
   await col.orders.createIndex({ studentId: 1, createdAt: -1 });
   await col.noShows.createIndex({ studentId: 1 });
+  await col.vendorApplications.createIndex({ status: 1, createdAt: 1 });
+  await col.loginEvents.createIndex({ ip: 1, createdAt: -1 });
+  await col.loginEvents.createIndex({ expiresAt: 1 }, { expireAfterSeconds: 0 });
   await col.feedback.createIndex({ vendorId: 1 });
   await col.feedback.createIndex({ studentId: 1 });
   // MongoDB deletes expired codes and sessions by itself
