@@ -71,7 +71,7 @@ export function Orders({ signedIn, orders, goAccount, goExplore, money, cancel, 
 export function Account({
   me, signedIn, authView, pending, email, code, name, cls, phone, setEmail, setCode, setName, setCls, setPhone,
   codeSent, devCode, busy, error, toggleAuthView, editEmail, submit, resendCode, googleSignIn,
-  feedback, setFeedback, sendFeedback, logout, openPrivacy, deleteAccount,
+  logout, openPrivacy, deleteAccount,
 }) {
   const needsProfile = !!pending || authView === 'signup';
   const title = signedIn ? 'Your account' : pending ? 'Finish your profile' : codeSent ? 'Check your inbox' : authView === 'signup' ? 'Create an account' : 'Sign in';
@@ -91,10 +91,6 @@ export function Account({
             </View>
             <Text style={S.body}>{me?.trust?.completed || 0} collected · {me?.trust?.cancelled || 0} cancelled · {me?.trust?.missed || 0} missed pickups</Text>
             <Text style={S.caption}>New accounts start at 80. Collected orders can add points; cancellations and missed pickups lower the score. Vendors can use it as context when reviewing an order.</Text>
-          </Panel>
-          <Panel title="Feedback">
-            <Field label="Message" placeholder="Share feedback with the team" multiline value={feedback} onChangeText={setFeedback} />
-            <Action label="Send feedback" icon="paper-plane-outline" tone="secondary" onPress={sendFeedback} disabled={feedback.trim().length < 5} />
           </Panel>
           <Action label="Sign out" icon="log-out-outline" tone="secondary" onPress={logout} />
           <Action label="Privacy and account data" icon="shield-checkmark-outline" tone="secondary" onPress={openPrivacy} />
@@ -128,6 +124,31 @@ export function Account({
           <Text style={S.caption}>Sign-in IP is used for account security. People on shared campus Wi-Fi can have the same IP.</Text>
         </Panel>
       )}
+    </Page>
+  );
+}
+
+export function About({ feedback, setFeedback, sendFeedback, busy }) {
+  const team = ['Anjney Rohit Shah', 'Aarush Sequeira', 'Atharva Patil', 'Akshay B'];
+  return (
+    <Page title="About us">
+      <Panel title="Why we built Campus Vendors">
+        <Text style={S.body}>
+          Campus life is busy. We want to bring useful campus services into one simple place, save students time, and help local merchants reach the campus community and manage orders more easily.
+        </Text>
+      </Panel>
+      <Panel title="Our team">
+        {team.map((member, index) => (
+          <View key={member} style={[S.itemRow, index > 0 && S.divider]}>
+            <Text style={S.label}>{index + 1}.</Text>
+            <Text style={[S.body, { flex: 1 }]}>{member}</Text>
+          </View>
+        ))}
+      </Panel>
+      <Panel title="Feedback" description="Your message will be emailed to the Campus Vendors admin.">
+        <Field label="Message" placeholder="Share feedback with the team" multiline value={feedback} onChangeText={setFeedback} />
+        <Action label={busy ? 'Sending…' : 'Send feedback'} icon="paper-plane-outline" tone="secondary" onPress={sendFeedback} disabled={busy || feedback.trim().length < 5} />
+      </Panel>
     </Page>
   );
 }

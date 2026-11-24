@@ -160,7 +160,7 @@ export function ShopDetails({
               <Field style={{ flex: 1 }} label="Copies" keyboardType="number-pad" value={printCopies} onChangeText={setPrintCopies} />
             </View>
             <Text style={S.body}>Black and white · Single sided · Est. {money(withWarningFee(Math.round(printSubtotal)))}</Text>
-            {warningFeePercent > 0 && <Text style={S.caption}>Estimate includes a {warningFeePercent}% missed pickup fee.</Text>}
+            {warningFeePercent > 0 && <Text style={S.caption}>Estimate includes your {warningFeePercent}% warning fee; it goes to the shop.</Text>}
             <Action label={submittingOrder ? 'Submitting…' : 'Submit print job'} onPress={submitPrint} disabled={!printFile || submittingOrder} />
           </Panel>
         )}
@@ -170,7 +170,7 @@ export function ShopDetails({
       </ScrollView>
       {cart.length > 0 && (
         <View style={S.checkout}>
-          {warningFeePercent > 0 && <Text style={S.caption}>A {warningFeePercent}% missed pickup fee goes to the shop.</Text>}
+          {warningFeePercent > 0 && <Text style={S.caption}>Your {warningFeePercent}% warning fee goes to the shop.</Text>}
           <Action
             label={submittingOrder ? 'Placing order…' : `Place order · ${money(withWarningFee(subtotal))}`}
             icon="basket-outline"

@@ -15,7 +15,7 @@ const PORT = Number(process.env.PORT) || 10000;
 const ORIGINS = (process.env.ALLOWED_ORIGINS || "http://localhost:8000").split(",").map((s) => s.trim()).filter(Boolean);
 const CODE_TTL_MIN = 10;
 const SESSION_DAYS = 30;
-const WARNING_FEE_PERCENT = { 1: 5, 2: 10 };
+const WARNING_FEE_PERCENT = { 1: 5, 2: 10, 3: 15 };
 const ADMIN_EMAIL = String(process.env.ADMIN_EMAIL || "").trim().toLowerCase();
 // Local only (never on Render): with no Brevo key, the code is shown in the response so you can test.
 const PRODUCTION = Boolean(process.env.RENDER) || process.env.NODE_ENV === "production";
@@ -188,18 +188,19 @@ async function issueStrike(student, order, reason, session) {
     shop: order.data.shopName || "Shop", at: new Date(), reason,
   }, { session });
   const strikes = (student.strikes || 0) + 1;
-  const blocked = strikes >= 3;
-  const changes = { strikes, blocked };
-  if (reason === "not_collected") {
-    changes.feeLevel = Math.min(2, (student.feeLevel || 0) + 1);
-    changes.feePending = !blocked;
-  }
+  const blocked = strikes >= 4;
+  const changes = {
+    strikes,
+    blocked,
+    feeLevel: Math.min(3, (student.feeLevel ?? student.strikes ?? 0) + 1),
+    feePending: !blocked,
+  };
   if (blocked) {
     changes.feePending = false;
     changes.feeOrderId = null;
     const banId = MOBILE_ONLY ? mobileHash(`ban:${student.email}`) : student.email;
     await C.blockedEmails.updateOne({ _id: banId }, {
-      $setOnInsert: { reason: "Three order cancellations or missed pickups", at: new Date() },
+      $setOnInsert: { reason: "Four order cancellations or missed pickups after three warnings", at: new Date() },
     }, { upsert: true, session });
   }
   await C.students.updateOne({ _id: student._id }, { $set: changes }, { session });
@@ -209,7 +210,7 @@ async function issueStrike(student, order, reason, session) {
 async function notifyStrike(strike) {
   if (strike?.newlyBlocked) {
     try {
-      await sendBanNotice(strike.email, strike.name, "Three order cancellations or missed pickups");
+      await sendBanNotice(strike.email, strike.name, "Four order cancellations or missed pickups after three warnings");
     } catch (err) {
       console.error("Ban email failed:", err.message);
     }
@@ -292,8 +293,6 @@ app.post("/api/auth/verify", wrap(async (req, res) => {
 
 /* ---------- mobile authentication ---------- */
 const minute = 60_000;
-const authLimit = limitMobile("auth", 50, 15 * minute);
-
 function profileDetails(body) {
   return {
     name: str(body.name, 40).replace(/\s+/g, " "),
@@ -353,7 +352,7 @@ async function finishMobileAuth(req, res, student, method) {
   return res.json({ token: await newSession("student", student._id), student: studentOut(student) });
 }
 
-app.post("/api/mobile/auth/send-code", authLimit, wrap(async (req, res) => {
+app.post("/api/mobile/auth/send-code", wrap(async (req, res) => {
   const raw = str(req.body?.email, 120).toLowerCase();
   if (!GMAIL.test(raw)) return fail(res, 400, "Enter a valid Gmail address.");
   const email = canonicalGmail(raw);
@@ -363,7 +362,7 @@ app.post("/api/mobile/auth/send-code", authLimit, wrap(async (req, res) => {
   return sendMobileCode(res, `mobile:student:${email}`, raw, details || null);
 }));
 
-app.post("/api/mobile/auth/verify", authLimit, wrap(async (req, res) => {
+app.post("/api/mobile/auth/verify", wrap(async (req, res) => {
   const email = canonicalGmail(str(req.body?.email, 120));
   const verified = await consumeMobileCode(`mobile:student:${email}`, req.body?.code);
   if (!verified) return fail(res, 400, "That code is incorrect or expired. Check the latest email or request a new code.");
@@ -377,7 +376,7 @@ app.post("/api/mobile/auth/verify", authLimit, wrap(async (req, res) => {
   return finishMobileAuth(req, res, student, "mobile_otp");
 }));
 
-app.post("/api/mobile/auth/finish", authLimit, wrap(async (req, res) => {
+app.post("/api/mobile/auth/finish", wrap(async (req, res) => {
   const details = profileDetails(req.body || {});
   if (!completeProfile(details)) return fail(res, 400, "Enter a name, class, and valid mobile number.");
   const filter = { _id: sha(req.body?.pendingToken), kind: "pending-mobile", expiresAt: { $gt: new Date() } };
@@ -393,7 +392,7 @@ app.post("/api/mobile/auth/finish", authLimit, wrap(async (req, res) => {
   return finishMobileAuth(req, res, student, "mobile_profile");
 }));
 
-app.post("/api/mobile/auth/google", authLimit, wrap(async (req, res) => {
+app.post("/api/mobile/auth/google", wrap(async (req, res) => {
   if (!GOOGLE_AUDIENCE) return fail(res, 503, "Google sign-in is unavailable. Use email instead.");
   const idToken = req.body?.idToken;
   if (typeof idToken !== "string" || !idToken || idToken.length > 10000) {
@@ -423,14 +422,14 @@ app.post("/api/mobile/auth/google", authLimit, wrap(async (req, res) => {
   return finishMobileAuth(req, res, student, "google");
 }));
 
-app.post("/api/mobile/vendor/send-code", authLimit, wrap(async (req, res) => {
+app.post("/api/mobile/vendor/send-code", wrap(async (req, res) => {
   const email = canonicalGmail(str(req.body?.email, 120));
   const vendor = await C.vendors.findOne({ nameKey: DB.nameKey(req.body?.shop), ownerEmail: email });
   if (!vendor) return fail(res, 400, "Enter the approved shop name and its owner Gmail.");
   return sendMobileCode(res, `mobile:vendor:${vendor._id}`, vendor.ownerEmail, null);
 }));
 
-app.post("/api/mobile/vendor/verify", authLimit, wrap(async (req, res) => {
+app.post("/api/mobile/vendor/verify", wrap(async (req, res) => {
   const email = canonicalGmail(str(req.body?.email, 120));
   const vendor = await C.vendors.findOne({ nameKey: DB.nameKey(req.body?.shop), ownerEmail: email });
   const verified = vendor && await consumeMobileCode(`mobile:vendor:${vendor._id}`, req.body?.code);
@@ -749,6 +748,37 @@ app.post("/api/feedback", wrap(async (req, res) => {
   res.json({ feedback: { ...data, status: "open" } });
 }));
 
+// App feedback is both emailed to the configured reviewer and kept in the feedback collection.
+app.post("/api/mobile/feedback", wrap(async (req, res) => {
+  const student = await needStudent(req, res);
+  if (!student) return;
+  if (!ADMIN_EMAIL) return fail(res, 503, "Feedback email is not configured.");
+  const message = str(req.body?.message, 600).trim();
+  if (message.length < 5) return fail(res, 400, "Please write a little more.");
+
+  const id = newId("f");
+  const data = {
+    id,
+    ref: "FB-" + (await DB.nextSeq("feedback", 1001)),
+    type: "feedback",
+    message,
+    studentId: student._id,
+    name: student.name,
+    contact: student.email,
+    at: Date.now(),
+  };
+  const subject = `Campus Vendors feedback from ${str(student.name, 40) || "a student"}`;
+  const emailText = `Feedback ${data.ref}\nFrom: ${data.name} <${data.contact}>\n\n${message}`;
+  try {
+    await sendEmail(ADMIN_EMAIL, subject, emailText);
+  } catch (err) {
+    console.error("Mobile feedback email failed:", err.message);
+    return fail(res, 502, "The feedback email could not be sent. Please try again later.");
+  }
+  await C.feedback.insertOne({ _id: id, studentId: student._id, status: "open", data, createdAt: new Date() });
+  return res.json({ ok: true, emailSent: true, ref: data.ref });
+}));
+
 /* ---------- mobile merchant applications ---------- */
 const merchantApplicationLimit = limitMobile("vendor-application", 10, 60 * minute);
 const htmlEscape = value => String(value).replace(/[&<>"']/g, char => ({
@@ -955,13 +985,13 @@ app.put("/api/vendor/me", wrap(async (req, res) => {
 const NEXT = { placed: ["accepted", "rejected"], accepted: ["ready"], ready: ["collected", "no_show"] };
 const vendorAssistantLimit = limitMobile("vendor-assistant", 30, 60 * minute);
 
-// Qwen can only draft a bounded action. The merchant confirms it in the app,
+// Gemini can only draft a bounded action. The merchant confirms it in the app,
 // then the app applies it through the existing vendor-authenticated endpoints.
 app.post("/api/mobile/vendor/assistant", vendorAssistantLimit, wrap(async (req, res) => {
   const vendor = await needVendor(req, res);
   if (!vendor) return;
-  const apiKey = String(process.env.QWEN_API_KEY || "").trim();
-  if (!apiKey) return fail(res, 503, "Voice helper is not configured yet. Add QWEN_API_KEY to the API service environment.");
+  const apiKey = String(process.env.GEMINI_API_KEY || "").trim();
+  if (!apiKey) return fail(res, 503, "Voice helper is not configured yet. Add GEMINI_API_KEY to the API service environment.");
   const text = str(req.body?.text, 1000);
   const language = ({ en: "English", hi: "Hindi", kn: "Kannada" })[req.body?.language];
   if (!text || !language) return fail(res, 400, "Enter a request and choose English, Hindi, or Kannada.");
@@ -980,25 +1010,28 @@ app.post("/api/mobile/vendor/assistant", vendorAssistantLimit, wrap(async (req, 
   const timer = setTimeout(() => controller.abort(), 20_000);
   let upstream;
   try {
-    upstream = await fetch(process.env.QWEN_API_URL || "https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions", {
+    const model = String(process.env.GEMINI_MODEL || "gemini-3.5-flash-lite").trim();
+    upstream = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent`, {
       method: "POST", signal: controller.signal,
-      headers: { authorization: `Bearer ${apiKey}`, "content-type": "application/json" },
+      headers: { "x-goog-api-key": apiKey, "content-type": "application/json" },
       body: JSON.stringify({
-        model: process.env.QWEN_MODEL || "qwen-turbo",
-        messages: [
-          { role: "system", content: "You are a multilingual shop operations helper. Output valid JSON only. Be concise and answer exclusively in the requested language." },
-          { role: "user", content: prompt },
-        ],
-        temperature: 0.2, max_tokens: 400, response_format: { type: "json_object" },
+        systemInstruction: {
+          parts: [{ text: "You are a multilingual shop operations helper. Output valid JSON only. Be concise and answer exclusively in the requested language." }],
+        },
+        contents: [{ role: "user", parts: [{ text: prompt }] }],
+        generationConfig: { temperature: 0.2, maxOutputTokens: 400, responseMimeType: "application/json" },
       }),
     });
+  } catch (err) {
+    console.error("Gemini assistant request failed:", err.name);
+    return fail(res, err.name === "AbortError" ? 504 : 502, "The voice helper could not answer right now. Please try again.");
   } finally { clearTimeout(timer); }
   if (!upstream?.ok) {
-    console.error("Qwen assistant request failed", upstream?.status);
+    console.error("Gemini assistant request failed", upstream.status);
     return fail(res, 502, "The voice helper could not answer right now. Please try again.");
   }
   const completion = await upstream.json();
-  const content = completion.choices?.[0]?.message?.content;
+  const content = completion.candidates?.[0]?.content?.parts?.map(part => part.text || "").join("");
   let parsed;
   try { parsed = JSON.parse(String(content || "").replace(/^```(?:json)?\s*|\s*```$/g, "")); }
   catch { return fail(res, 502, "The voice helper returned an unreadable answer. Please try again."); }

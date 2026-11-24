@@ -3,7 +3,7 @@ import { ActivityIndicator, Alert, AppState, BackHandler, Keyboard, KeyboardAvoi
 import { SafeAreaProvider, SafeAreaView } from 'react-native-safe-area-context';
 import { isRunningInExpoGo } from 'expo';
 import { Explore, ShopDetails } from './directory';
-import { Account, Merchant, Orders } from './flows';
+import { About, Account, Merchant, Orders } from './flows';
 import { Home, Welcome, services } from './home';
 import { clearNativeGoogleSession, nativeGoogleConfigured, signInWithNativeGoogle } from './native-google';
 import { Icon, colors, styles as S } from './ui';
@@ -25,6 +25,7 @@ const TABS = [
   { label: 'Orders', icon: 'receipt' },
   { label: 'Shop', icon: 'storefront' },
   { label: 'Account', icon: 'person' },
+  { label: 'About', icon: 'information-circle' },
 ];
 const rupees = new Intl.NumberFormat('en-IN', { style: 'currency', currency: 'INR', minimumFractionDigits: 0, maximumFractionDigits: 2 });
 const money = amount => rupees.format(Number(amount) || 0);
@@ -314,7 +315,7 @@ function CampusVendors() {
       file: `data:application/pdf;base64,${await readPrintFile(printFile)}`,
     }), () => setPrintFile(null), 'Print job placed');
   }
-  async function cancelOrder(o){Alert.alert('Cancel this order?', 'Repeated cancellations create warnings. Three warnings block ordering. Continue?', [{text:'Keep order',style:'cancel'},{text:'Cancel order',style:'destructive',onPress:async()=>{try{const d=await request(`/api/mobile/orders/${o.id}/cancel`,'PUT',{});await refresh();Alert.alert('Order cancelled',d.strike?.blocked?'Your account has been banned after three warnings.':`Warning ${d.strike?.strikes||''} recorded.`)}catch(e){Alert.alert('Could not cancel',e.message)}}}])}
+  async function cancelOrder(o){Alert.alert('Cancel this order?', 'Repeated cancellations create warnings. After three warnings, another cancellation or missed pickup bans ordering. Continue?', [{text:'Keep order',style:'cancel'},{text:'Cancel order',style:'destructive',onPress:async()=>{try{const d=await request(`/api/mobile/orders/${o.id}/cancel`,'PUT',{});await refresh();const strike=d.strike;const feePercent={1:5,2:10,3:15}[strike?.strikes]||0;Alert.alert('Order cancelled',strike?.blocked?'Your account has been banned after three warnings and another cancellation or missed pickup.':`Warning ${strike?.strikes||''} recorded. Your next order will include a ${feePercent}% fee for the shop.`)}catch(e){Alert.alert('Could not cancel',e.message)}}}])}
   async function vendorLogin(credentials) {
     setBusy(true);
     setError('');
@@ -401,7 +402,15 @@ function CampusVendors() {
   async function updateShop(patch){try{const d=await request('/api/vendor/me','PUT',patch);setVendor(d.vendor);setShops(await (async()=>normalize((await request('/api/sync')).vendors))())}catch(e){Alert.alert('Could not save shop',e.message)}}
   async function updateOrder(o,status){try{await request(`/api/mobile/vendor/orders/${o.id}`,'PUT',{status});await vendorRefresh()}catch(e){Alert.alert('Order update failed',e.message)}}
   async function rateOrder(o,stars){try{await request(`/api/orders/${o.id}/rate`,'POST',{stars,comment:''});await refresh();Alert.alert('Thanks for rating',`Your ${stars}-star rating was saved.`)}catch(e){Alert.alert('Could not rate order',e.message)}}
-  async function sendFeedback(){try{await request('/api/feedback','POST',{type:'feedback',message:feedbackMessage});setFeedbackMessage('');Alert.alert('Feedback sent','Thank you for helping improve Campus Vendors.')}catch(e){Alert.alert('Could not send feedback',e.message)}}
+  async function sendFeedback(){
+    try {
+      const result = await request('/api/mobile/feedback', 'POST', { message: feedbackMessage });
+      setFeedbackMessage('');
+      Alert.alert('Feedback sent', `Your feedback was emailed to the Campus Vendors team. Reference: ${result.ref}`);
+    } catch (e) {
+      Alert.alert('Could not send feedback', e.message);
+    }
+  }
   async function applyShop() {
     setBusy(true);
     try {
@@ -621,6 +630,8 @@ function CampusVendors() {
             openPrivacy={() => openPrivacyPage('privacy')}
             language={language} askAssistant={vendorAssistant} confirmAssistantAction={confirmAssistantAction}
           />
+        ) : page === 'About' ? (
+          <About feedback={feedbackMessage} setFeedback={setFeedbackMessage} sendFeedback={sendFeedback} busy={busy} />
         ) : (
           <Account
             me={me} signedIn={!!token} authView={authView} pending={pending}
@@ -630,7 +641,7 @@ function CampusVendors() {
             toggleAuthView={toggleAuthView} editEmail={editEmail}
             submit={pending ? finishProfile : codeSent ? verifyCode : sendCode} resendCode={sendCode}
             googleSignIn={startGoogleSignIn}
-            feedback={feedbackMessage} setFeedback={setFeedbackMessage} sendFeedback={sendFeedback} logout={logout}
+            logout={logout}
             openPrivacy={() => openPrivacyPage('privacy')} deleteAccount={() => openPrivacyPage('delete-account')}
           />
         )}
