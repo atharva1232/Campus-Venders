@@ -1,14 +1,27 @@
 {
   "expo": {
     "name": "Campus Vendors",
+    "owner": "ajss",
     "slug": "campus-vendors-mobile",
     "scheme": "campusvendors",
     "version": "1.0.0",
     "orientation": "portrait",
     "userInterfaceStyle": "light",
     "backgroundColor": "#f5f0e6",
-    "splash": { "backgroundColor": "#16302a", "resizeMode": "contain" },
-    "android": { "package": "com.campusvendors.mobile" },
-    "ios": { "bundleIdentifier": "com.campusvendors.mobile" }
+    "splash": {
+      "backgroundColor": "#16302a",
+      "resizeMode": "contain"
+    },
+    "android": {
+      "package": "com.campusvendors.mobile"
+    },
+    "ios": {
+      "bundleIdentifier": "com.campusvendors.mobile"
+    },
+    "extra": {
+      "eas": {
+        "projectId": "55103d4c-0757-40eb-8fea-b6bfd74e759c"
+      }
+    }
   }
 }
