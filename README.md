@@ -21,6 +21,11 @@ Everything it connects to is set with environment variables on that service:
 - **Emails**: 6-digit sign-in codes sent through Brevo from atharvap3212@gmail.com
 - **Code**: https://github.com/atharva1232/Campus-Venders (every push to `main` redeploys)
 
+## Mobile app
+An Android and iOS app is being built with Expo and React Native on the separate [`app-dev` branch](https://github.com/atharva1232/Campus-Venders/tree/app-dev/app). The app follows the website's campus colors and includes student OTP sign-in, shop browsing, food and print orders, order tracking, and merchant shop registration with email approval. The mobile app was implemented by Anjney Rohit Shah.
+
+To keep the current website deployment unchanged, the app's API is configured as a separate Render service in [`render.yaml`](https://github.com/atharva1232/Campus-Venders/blob/app-dev/render.yaml). Before using the app, deploy that service with the existing MongoDB and Brevo settings plus the shop-review inbox, then set `EXPO_PUBLIC_API_URL` for the app to the new service URL. Setup notes are in the [mobile app README](https://github.com/atharva1232/Campus-Venders/blob/app-dev/app/README.md).
+
 ## Run it on your computer
 ```bash
 cd server
