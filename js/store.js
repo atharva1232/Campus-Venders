@@ -8,7 +8,6 @@
   const CACHE_KEY = "cvd_cache_v2";   // last copy of the shop list, so the page draws instantly
   const CART_KEY = "cvd_cart_v2";
   const VENDOR_KEY = "cvd_vendor_token";
-  const ADMIN_KEY = "cvd_admin_token";
   const listeners = new Set();
   const get = (k) => { try { return localStorage.getItem(k); } catch (e) { return null; } };
   const set = (k, v) => { try { v == null ? localStorage.removeItem(k) : localStorage.setItem(k, v); } catch (e) {} };
@@ -16,8 +15,7 @@
   /* fetch wrapper: adds the student / shop sign-in and turns errors into { error } */
   async function api(method, path, body) {
     const headers = { "content-type": "application/json" };
-    const adminPath = path.startsWith("/api/admin");
-    const st = adminPath ? get(ADMIN_KEY) : window.Auth && window.Auth.token();
+    const st = window.Auth && window.Auth.token();
     if (st) headers.authorization = "Bearer " + st;
     const vt = get(VENDOR_KEY);
     if (vt) headers["x-vendor-token"] = vt;
@@ -96,17 +94,7 @@
       if (d.error) return d;
       this.state.orders.unshift(d.order);
       this.save();
-      if (d.order.warningFee && window.Auth) await window.Auth.refresh();
       return d.order;
-    },
-    async cancelOrder(id) {
-      const d = await api("PUT", "/api/orders/" + encodeURIComponent(id) + "/cancel", {});
-      if (d.error) return d;
-      const o = this.state.orders.find((x) => x.id === id);
-      if (o) o.status = "cancelled";
-      this.save();
-      if (window.Auth) await window.Auth.refresh();
-      return d;
     },
     /* shop changes an order's status; for "no_show" the result says whether the student was warned or blocked */
     async setOrderStatus(id, status) {
@@ -136,21 +124,13 @@
     },
     async vendorLogout() { await api("POST", "/api/vendor/logout"); set(VENDOR_KEY, null); this.vendorId = null; },
     async addVendor(v) {
-      return api("POST", "/api/vendors", v);
+      const d = await api("POST", "/api/vendors", v);
+      if (d.error) return d;
+      set(VENDOR_KEY, d.token);
+      this.state.vendors.push(d.vendor);
+      await this.sync();
+      return d.vendor;
     },
-    async adminSendCode(email) { return api("POST", "/api/admin/send-code", { email }); },
-    async adminVerify(code) {
-      const d = await api("POST", "/api/admin/verify", { code });
-      if (!d.error) set(ADMIN_KEY, d.token);
-      return d;
-    },
-    adminToken() { return get(ADMIN_KEY); },
-    async adminApplications() { return api("GET", "/api/admin/applications"); },
-    async reviewApplication(id, action) { return api("PATCH", "/api/admin/applications/" + encodeURIComponent(id), { action }); },
-    async adminSettings() { return api("GET", "/api/admin/settings"); },
-    async saveAdminSettings(settings) { return api("PUT", "/api/admin/settings", settings); },
-    async adminSecurityEvents() { return api("GET", "/api/admin/security-events"); },
-    async adminLogout() { await api("GET", "/api/admin/logout"); set(ADMIN_KEY, null); },
     /* the signed-in shop edits itself (status, queue, announcement, menu). Shown at once, saved in the
        background, one save after another so quick edits arrive in order. */
     saving: {},          // shop id -> number of saves still on their way
