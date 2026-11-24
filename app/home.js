@@ -100,7 +100,7 @@ export function Welcome({ goEmail, goGoogle, goMerchant, googleNotice, sessionNo
   );
 }
 
-export function Home({ me, orders, shops, browse, goOrders, language = 'en', setLanguage = () => {} }) {
+export function Home({ me, orders, shops, browse, goOrders, onBuyAgain, language = 'en', setLanguage = () => {} }) {
   const carousel = useRef(null);
   const [slide, setSlide] = useState(0);
   const { width: screenWidth } = useWindowDimensions();
@@ -123,6 +123,24 @@ export function Home({ me, orders, shops, browse, goOrders, language = 'en', set
   const nextPickup = orders.find(order => order.status === 'ready')
     || orders.find(order => ['placed', 'accepted'].includes(order.status));
   const pickupShop = nextPickup && shops.find(shop => shop.id === nextPickup.vendorId);
+  const repeatItems = (() => {
+    const history = new Map();
+    [...orders].filter(order => order.status === 'collected' && order.type !== 'print')
+      .sort((a, b) => Number(b.createdAt || 0) - Number(a.createdAt || 0))
+      .forEach(order => (order.items || []).forEach(item => {
+        const key = `${order.vendorId}:${item.id || String(item.name || '').toLowerCase()}`;
+        const current = history.get(key) || { vendorId: order.vendorId, id: item.id, name: item.name, count: 0, lastAt: 0 };
+        current.count += 1;
+        current.lastAt = Math.max(current.lastAt, Number(order.createdAt || 0));
+        history.set(key, current);
+      }));
+    return [...history.values()].map(previous => {
+      const shop = shops.find(entry => entry.id === previous.vendorId && entry.status === 'open');
+      if (!shop) return null;
+      const item = (shop.menu || []).find(entry => (previous.id && entry.id === previous.id) || entry.name?.toLowerCase() === previous.name?.toLowerCase());
+      return item && item.inStock !== false ? { shop, item, count: previous.count, lastAt: previous.lastAt } : null;
+    }).filter(Boolean).sort((a, b) => b.count - a.count || b.lastAt - a.lastAt).slice(0, 3);
+  })();
 
   return (
     <ScrollView style={S.scroll} contentContainerStyle={styles.content}>
@@ -168,6 +186,20 @@ export function Home({ me, orders, shops, browse, goOrders, language = 'en', set
         </View>
       </View>
 
+      {repeatItems.length > 0 && (
+        <View style={styles.serviceSection}>
+          <View style={S.titleRow}><Text accessibilityRole="header" style={S.sectionTitle}>Buy again</Text><Text style={S.caption}>From your collected orders</Text></View>
+          {repeatItems.map(({ shop, item, count }) => (
+            <Pressable key={`${shop.id}:${item.id || item.name}`} accessibilityRole="button" accessibilityLabel={`Buy ${item.name} again from ${shop.name}`} onPress={() => onBuyAgain?.(shop, item)} style={({ pressed }) => [styles.repeatCard, pressed && styles.pressed]}>
+              <View style={[styles.iconTile, { backgroundColor: colors.peach }]}><Icon name="refresh-outline" color={colors.forest} size={19} /></View>
+              <View style={styles.repeatCopy}><Text numberOfLines={1} style={S.shopName}>{item.name}</Text><Text numberOfLines={1} style={S.caption}>{shop.name} · ordered {count} {count === 1 ? 'time' : 'times'}</Text></View>
+              <Text style={styles.repeatPrice}>₹{Number(item.price || 0).toFixed(0)}</Text>
+              <Icon name="chevron-forward" color={colors.muted} size={17} />
+            </Pressable>
+          ))}
+        </View>
+      )}
+
       {nextPickup && (
         <Panel title="Your next pickup">
           <View style={S.titleRow}>
@@ -208,6 +240,9 @@ const styles = StyleSheet.create({
   carouselDot: { width: 6, height: 6, borderRadius: 3, backgroundColor: colors.line },
   carouselDotActive: { width: 18, backgroundColor: colors.orange, borderRadius: 5 },
   serviceSection: { gap: 8 },
+  repeatCard: { minHeight: 68, backgroundColor: colors.surface, borderWidth: 1, borderColor: colors.line, borderRadius: 15, paddingHorizontal: 11, paddingVertical: 9, flexDirection: 'row', alignItems: 'center', gap: 10 },
+  repeatCopy: { flex: 1, minWidth: 0, gap: 3 },
+  repeatPrice: { color: colors.forest, fontSize: 14, fontWeight: '900' },
   gridRow: { flexDirection: 'row', gap: 8 },
   serviceCard: {
     flex: 1,

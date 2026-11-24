@@ -90,6 +90,17 @@ async function sessionSubject(token, kind) {
 const bearer = (req) => { const h = req.get("authorization") || ""; return h.startsWith("Bearer ") ? h.slice(7) : null; };
 
 const studentOut = (s) => ({ id: s._id, email: s.email, name: s.name, cls: s.cls, phone: s.phone, strikes: s.strikes || 0, blocked: !!s.blocked, feePending: !!s.feePending, warningFeePercent: s.feePending && !s.feeOrderId ? WARNING_FEE_PERCENT[s.feeLevel ?? s.strikes] || 0 : 0, feeOrderId: s.feeOrderId || null });
+async function studentTrustProfile(studentId) {
+  const [completed, warnings] = await Promise.all([
+    C.orders.countDocuments({ studentId, status: "collected" }),
+    C.noShows.find({ studentId }, { projection: { reason: 1 } }).toArray(),
+  ]);
+  const cancelled = warnings.filter(item => item.reason === "cancelled").length;
+  const missed = warnings.filter(item => item.reason === "not_collected").length;
+  const score = Math.max(0, Math.min(100, 80 + Math.min(20, completed * 2) - cancelled * 10 - missed * 15));
+  const level = score >= 85 ? "Excellent" : score >= 70 ? "Good" : score >= 40 ? "Fair" : "Needs improvement";
+  return { score, level, completed, cancelled, missed };
+}
 async function loadStudent(req) {
   const id = await sessionSubject(bearer(req), "student");
   return id ? C.students.findOne({ _id: id }) : null;
@@ -486,7 +497,7 @@ app.get("/api/sync", wrap(async (req, res) => {
   const s = await loadStudent(req);
   if (s && s.blocked) out.blocked = true;
   else if (s) {
-    out.me = studentOut(s);
+    out.me = { ...studentOut(s), trust: await studentTrustProfile(s._id) };
     out.noShows = await noShowsOf(s._id);
     out.myOrders = (await C.orders.find({ studentId: s._id }).sort({ createdAt: -1 }).limit(100).toArray()).map(orderOut);
     out.myFeedback = (await C.feedback.find({ studentId: s._id }).sort({ createdAt: -1 }).toArray()).map(feedbackOut);
@@ -645,7 +656,7 @@ app.post("/api/mobile/orders", orderLimit, wrap(async (req, res) => {
       id, token, type: print ? "print" : "food", vendorId: vendor._id, shopName: vendor.data.name,
       items, subtotal, total: Math.round((subtotal + fee) * 100) / 100,
       pickup: clockTime.test(body.pickup) ? body.pickup : "ASAP", note: str(body.note, 100),
-      student: { id: student._id, name: student.name, cls: student.cls, phone: student.phone },
+      student: { id: student._id, name: student.name, cls: student.cls, phone: student.phone, trust: await studentTrustProfile(student._id) },
       createdAt: Date.now(), ...(print ? { print } : {}),
       ...(fee ? { warningFee: { percent, amount: fee, forMerchant: true, level: feeLevel } } : {}),
     };

@@ -72,6 +72,14 @@ export function Account({
             <Text style={S.body}>{[me?.cls, me?.phone].filter(Boolean).join(' · ')}</Text>
             <Text style={S.label}>Warnings: {me?.strikes || 0}</Text>
           </Panel>
+          <Panel title="Your trust score" description="A clear score based only on your Campus Vendors order history.">
+            <View style={S.titleRow}>
+              <Text accessibilityRole="header" style={{ color: colors.forest, fontSize: 34, fontWeight: '900' }}>{me?.trust?.score ?? 80}<Text style={{ fontSize: 15, fontWeight: '700' }}> / 100</Text></Text>
+              <Choice label={me?.trust?.level || 'New'} selected onPress={() => {}} />
+            </View>
+            <Text style={S.body}>{me?.trust?.completed || 0} collected · {me?.trust?.cancelled || 0} cancelled · {me?.trust?.missed || 0} missed pickups</Text>
+            <Text style={S.caption}>New accounts start at 80. Collected orders can add points; cancellations and missed pickups lower the score. Vendors can use it as context when reviewing an order.</Text>
+          </Panel>
           <Panel title="Feedback">
             <Field label="Message" placeholder="Share feedback with the team" multiline value={feedback} onChangeText={setFeedback} />
             <Action label="Send feedback" icon="paper-plane-outline" tone="secondary" onPress={sendFeedback} disabled={feedback.trim().length < 5} />
@@ -173,6 +181,11 @@ export function Merchant({
                 <Badge status={order.status} />
               </View>
               <Text style={S.body}>{[order.student?.name, orderSummary(order)].filter(Boolean).join(' · ')}</Text>
+              <View style={styles.customerTrust}>
+                <Icon name="shield-checkmark-outline" color={colors.forest} size={16} />
+                <Text style={S.label}>Customer trust: {order.student?.trust?.score ?? 80}/100 · {order.student?.trust?.level || 'New'}</Text>
+              </View>
+              <Text style={S.caption}>{order.student?.trust?.completed ?? 0} collected · {order.student?.trust?.cancelled ?? 0} cancelled · {order.student?.trust?.missed ?? 0} missed pickups</Text>
               <Text style={S.label}>Collect {money(order.total)}{order.warningFee ? ` · includes ${order.warningFee.percent}% merchant bonus` : ''}</Text>
               {order.type === 'print' && order.print?.hasFile && <Action label="Download PDF" icon="download-outline" tone="secondary" onPress={() => downloadPrint(order)} />}
               {(statusActions[order.status] || []).map(([status, label]) => (
@@ -233,6 +246,8 @@ export function Merchant({
     </Page>
   );
 }
+
+const styles = { customerTrust: { flexDirection: 'row', alignItems: 'center', gap: 6 } };
 
 function VendorVoiceAssistant({ language, orders, ask, confirm }) {
   const [question, setQuestion] = useState('');

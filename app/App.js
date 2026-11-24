@@ -188,6 +188,16 @@ function CampusVendors() {
         : previous.filter(entry => !matches(entry));
     });
   }
+  function buyAgain(shop, item) {
+    if (!shop || !item) return;
+    setSelected(shop);
+    setPrintFile(null);
+    setCart(previous => {
+      const existing = previous.find(entry => entry.id === item.id && entry.vendorId === shop.id);
+      if (existing) return previous.map(entry => entry.id === item.id && entry.vendorId === shop.id ? { ...entry, qty: Math.min(50, entry.qty + 1) } : entry);
+      return [...previous, { ...item, vendorId: shop.id, qty: 1 }];
+    });
+  }
   async function sendCode(){try{setBusy(true);const d=await request('/api/mobile/auth/send-code','POST',{email:email.trim().toLowerCase(),...(authView==='signup'?{details:{name,cls,phone}}:{})},null);setDevCode(d.devCode||'');setCodeSent(true);setError('');}catch(e){setError(e.message)}finally{setBusy(false)}}
   async function verifyCode(){try{setBusy(true);const d=await request('/api/mobile/auth/verify','POST',{email:email.trim().toLowerCase(),code},null);if(d.needsProfile){setPending(d.pendingToken);setError('Add your name, class and mobile number to finish creating your account.');return}await finishLogin(d.token,d.student)}catch(e){setError(e.message)}finally{setBusy(false)}}
   async function finishProfile(){try{setBusy(true);const d=await request('/api/mobile/auth/finish','POST',{pendingToken:pending,name,cls,phone},null);await finishLogin(d.token,d.student)}catch(e){setError(e.message)}finally{setBusy(false)}}
@@ -587,7 +597,7 @@ function CampusVendors() {
             pickPrintFile={pickPrintFile} submitPrint={submitPrint} submittingOrder={submittingOrder}
           />
         ) : page === 'Home' ? (
-          <Home me={me} orders={orders} shops={shops} browse={browse} goOrders={() => goTo('Orders')} language={language} setLanguage={value => { setLanguage(value); storage.set('app-language', value).catch(() => {}); }} />
+          <Home me={me} orders={orders} shops={shops} browse={browse} goOrders={() => goTo('Orders')} onBuyAgain={buyAgain} language={language} setLanguage={value => { setLanguage(value); storage.set('app-language', value).catch(() => {}); }} />
         ) : page === 'Explore' ? (
           <Explore
             shops={shops} visible={visible} category={category} categories={categories}
