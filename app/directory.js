@@ -1,5 +1,5 @@
 import React from 'react';
-import { FlatList, Image, Pressable, ScrollView, Text, TextInput, View } from 'react-native';
+import { FlatList, Pressable, ScrollView, Text, TextInput, View } from 'react-native';
 import { Action, Badge, Choice, Empty, Field, Icon, Panel, Stepper, colors, styles as S } from './ui';
 
 function categoryIcon(category = '') {
@@ -24,10 +24,10 @@ export function ShopIcon({ shop }) {
   );
 }
 
-export function Explore({ shops, visible, category, categories, setCategory, query, setQuery, loading, error, refresh, onShopPress, heroImage }) {
+export function Explore({ shops, visible, category, categories, setCategory, query, setQuery, loading, error, refresh, onShopPress, serviceTitle, clearService }) {
   function clearFilters() {
     setQuery('');
-    setCategory('All');
+    clearService();
   }
 
   return (
@@ -43,12 +43,9 @@ export function Explore({ shops, visible, category, categories, setCategory, que
       ItemSeparatorComponent={() => <View style={S.cardGap} />}
       ListHeaderComponent={
         <View style={S.directoryHeader}>
-          <View style={S.hero}>
-            {heroImage && <Image source={heroImage} resizeMode="cover" style={S.heroImage} />}
-            <View style={S.heroCopy}>
-              <Text accessibilityRole="header" style={S.heroTitle}>Find your campus spot</Text>
-              <Text style={S.heroBody}>Food, print shops, and campus essentials.</Text>
-            </View>
+          <View style={S.titleRow}>
+            <Text accessibilityRole="header" style={[S.pageTitle, { flexShrink: 1 }]}>{serviceTitle || 'Explore shops'}</Text>
+            {serviceTitle && <Choice label="All shops" icon="grid-outline" onPress={clearService} />}
           </View>
           <View style={S.search}>
             <Icon name="search-outline" size={20} color={colors.muted} />
@@ -71,7 +68,7 @@ export function Explore({ shops, visible, category, categories, setCategory, que
           {categories.length > 1 && (
             <ScrollView horizontal keyboardShouldPersistTaps="handled" showsHorizontalScrollIndicator={false} contentContainerStyle={S.chips}>
               {categories.map(cat => (
-                <Choice key={cat} label={cat === 'All' ? 'All shops' : cat} icon={cat === 'All' ? 'grid-outline' : categoryIcon(cat)} selected={category === cat} onPress={() => setCategory(cat)} />
+                <Choice key={cat} label={cat === 'All' ? 'All' : cat} icon={cat === 'All' ? 'grid-outline' : categoryIcon(cat)} selected={category === cat} onPress={() => setCategory(cat)} />
               ))}
             </ScrollView>
           )}
@@ -84,7 +81,7 @@ export function Explore({ shops, visible, category, categories, setCategory, que
       ListEmptyComponent={
         error
           ? <Empty icon="cloud-offline-outline" title="Couldn’t load shops" description={error} action="Try again" onPress={refresh} />
-          : !loading && (query || category !== 'All'
+          : !loading && (query || category !== 'All' || serviceTitle
             ? <Empty icon="search-outline" title="No matching shops" action="Clear filters" onPress={clearFilters} />
             : <Empty icon="storefront-outline" title="No shops listed yet" action="Refresh directory" onPress={refresh} />)
       }

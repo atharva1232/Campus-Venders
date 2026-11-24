@@ -1,8 +1,10 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { Alert, KeyboardAvoidingView, Platform, Pressable, Text, View } from 'react-native';
 import { SafeAreaProvider, SafeAreaView } from 'react-native-safe-area-context';
+import { isRunningInExpoGo } from 'expo';
 import { Explore, ShopDetails } from './directory';
 import { Account, Merchant, Orders } from './flows';
+import { Home, services } from './home';
 import { Icon, colors, styles as S } from './ui';
 import * as SecureStore from 'expo-secure-store';
 import * as DocumentPicker from 'expo-document-picker';
@@ -14,8 +16,8 @@ import { StatusBar as ExpoStatusBar } from 'expo-status-bar';
 
 WebBrowser.maybeCompleteAuthSession();
 const API = process.env.EXPO_PUBLIC_API_URL || 'https://campus-vendors-mobile-api.onrender.com';
-const HERO_IMAGE = require('./assets/campus-food.jpg');
 const TABS = [
+  { label: 'Home', icon: 'home' },
   { label: 'Explore', icon: 'compass' },
   { label: 'Orders', icon: 'receipt' },
   { label: 'Shop', icon: 'storefront' },
@@ -38,7 +40,10 @@ export default function App() {
 }
 
 function CampusVendors() {
-  const [token,setToken]=useState(null), [me,setMe]=useState(null), [shops,setShops]=useState([]), [orders,setOrders]=useState([]), [cart,setCart]=useState([]), [tab,setTab]=useState('Explore');
+  const [token,setToken]=useState(null), [me,setMe]=useState(null), [shops,setShops]=useState([]), [orders,setOrders]=useState([]), [cart,setCart]=useState([]);
+  const [tab, setTab] = useState('Home');
+  const [service, setService] = useState(null);
+  const [googleNotice, setGoogleNotice] = useState('');
   const [busy,setBusy]=useState(false), [error,setError]=useState(''), [authView,setAuthView]=useState('login'), [codeSent,setCodeSent]=useState(false), [devCode,setDevCode]=useState(''), [pending,setPending]=useState('');
   const [email,setEmail]=useState(''), [code,setCode]=useState(''), [name,setName]=useState(''), [cls,setCls]=useState(''), [phone,setPhone]=useState(''), [query,setQuery]=useState(''), [category,setCategory]=useState('All'), [selected,setSelected]=useState(null), [vendorToken,setVendorToken]=useState(null), [vendor,setVendor]=useState(null), [vendorOrders,setVendorOrders]=useState([]);
   const [form,setForm]=useState({}), [itemName,setItemName]=useState(''), [itemPrice,setItemPrice]=useState(''), [shopNote,setShopNote]=useState(null), [printFile,setPrintFile]=useState(null), [printPages,setPrintPages]=useState('1'), [printCopies,setPrintCopies]=useState('1'), [feedbackMessage,setFeedbackMessage]=useState('');
@@ -49,7 +54,13 @@ function CampusVendors() {
     ios: process.env.EXPO_PUBLIC_GOOGLE_IOS_CLIENT_ID,
     web: process.env.EXPO_PUBLIC_GOOGLE_WEB_CLIENT_ID,
   });
-  const [googleRequest,googleResponse,promptGoogle]=Google.useAuthRequest({androidClientId:process.env.EXPO_PUBLIC_GOOGLE_ANDROID_CLIENT_ID||'preview-disabled.apps.googleusercontent.com',iosClientId:process.env.EXPO_PUBLIC_GOOGLE_IOS_CLIENT_ID||'preview-disabled.apps.googleusercontent.com',webClientId:process.env.EXPO_PUBLIC_GOOGLE_WEB_CLIENT_ID||'preview-disabled.apps.googleusercontent.com',responseType:'id_token',scopes:['openid','profile','email']});
+  const disabledClientId = 'preview-disabled.apps.googleusercontent.com';
+  const [googleRequest, googleResponse, promptGoogle] = Google.useIdTokenAuthRequest({
+    androidClientId: process.env.EXPO_PUBLIC_GOOGLE_ANDROID_CLIENT_ID || disabledClientId,
+    iosClientId: process.env.EXPO_PUBLIC_GOOGLE_IOS_CLIENT_ID || disabledClientId,
+    webClientId: process.env.EXPO_PUBLIC_GOOGLE_WEB_CLIENT_ID || disabledClientId,
+    selectAccount: true,
+  });
   const request=useCallback(async(path,method='GET',body=null,auth=token,shopToken=vendorToken)=>{
     const headers={'content-type':'application/json'}; if(auth) headers.authorization=`Bearer ${auth}`; if(shopToken)headers['x-vendor-token']=shopToken;
     let response; try { response=await fetch(`${API}${path}`,{method,headers,...(body?{body:JSON.stringify(body)}:{})}); } catch { throw new Error('Network unavailable. Check your connection and try again.'); }
@@ -99,10 +110,20 @@ function CampusVendors() {
     load();
   }, []);
 
-  useEffect(()=>{if(googleResponse?.type==='success'){const idToken=googleResponse.authentication?.idToken||googleResponse.params?.id_token;if(idToken)completeGoogle(idToken);else setError('Google did not return a verified ID token.')}} ,[googleResponse]);
-  const categories=useMemo(()=>['All',...new Set(shops.map(s=>s.category).filter(Boolean))],[shops]);
+  useEffect(() => {
+    if (googleResponse?.type === 'success') {
+      const idToken = googleResponse.authentication?.idToken || googleResponse.params?.id_token;
+      if (idToken) completeGoogle(idToken);
+      else setError('Google did not return an ID token.');
+    } else if (googleResponse?.type === 'error') {
+      setError('Google sign-in could not be completed. Try again or use email.');
+    }
+  }, [googleResponse]);
+
+  const directoryShops = useMemo(() => service ? shops.filter(services[service].matches) : shops, [service, shops]);
+  const categories = useMemo(() => ['All', ...new Set(directoryShops.map(shop => shop.category).filter(Boolean))], [directoryShops]);
   const search = query.trim().toLowerCase();
-  const visible = shops.filter(shop => {
+  const visible = directoryShops.filter(shop => {
     if (category !== 'All' && shop.category !== category) return false;
     const menuNames = (shop.menu || []).map(item => item.name);
     return [shop.name, shop.category, shop.location, ...menuNames]
@@ -126,7 +147,7 @@ function CampusVendors() {
   async function finishProfile(){try{setBusy(true);const d=await request('/api/mobile/auth/finish','POST',{pendingToken:pending,name,cls,phone},null);await finishLogin(d.token,d.student)}catch(e){setError(e.message)}finally{setBusy(false)}}
   async function completeGoogle(idToken){try{setBusy(true);const d=await request('/api/mobile/auth/google','POST',{idToken},null);if(d.needsProfile){setPending(d.pendingToken);setEmail(d.email);setError('Finish your profile to continue.');return}await finishLogin(d.token,d.student)}catch(e){setError(e.message)}finally{setBusy(false)}}
   async function finishLogin(t,student){await storage.set('student-token',t);setToken(t);setMe(student);setAuthView('login');setCodeSent(false);setPending('');setError('');await refresh(t)}
-  async function logout(){try{await request('/api/auth/logout','POST',{},token)}catch{}await storage.remove('student-token');setToken(null);setMe(null);setOrders([]);setTab('Explore')}
+  async function logout(){try{await request('/api/auth/logout','POST',{},token)}catch{}await storage.remove('student-token');setToken(null);setMe(null);setOrders([]);goTo('Home')}
   async function placeOrder(){if(!token){goTo('Account');setError('Sign in with your email code to place an order.');return}const items=selectedCart;try{const d=await request('/api/mobile/orders','POST',{vendorId:selected.id,items:items.map(x=>({id:x.id,qty:x.qty})),pickup:'ASAP',note:''});setCart(previous=>previous.filter(item=>item.vendorId!==selected.id));setSelected(null);await refresh();Alert.alert('Order placed',`Your pickup token is ${d.order.token}. Total: ${money(d.order.total)}${d.order.warningFee?` (includes ${d.order.warningFee.percent}% warning fee for the shop)`:''}`)}catch(e){Alert.alert('Could not place order',e.message)}}
   async function pickPrintFile(){try{const r=await DocumentPicker.getDocumentAsync({type:'application/pdf',copyToCacheDirectory:true});if(!r.canceled)setPrintFile(r.assets[0])}catch(e){Alert.alert('File picker unavailable',e.message)}}
   async function submitPrint(){if(!token){goTo('Account');setError('Sign in with your email code to submit a print job.');return}if(!printFile)return Alert.alert('Choose a PDF','Select the document you want printed.');try{const base64=await FileSystem.readAsStringAsync(printFile.uri,{encoding:FileSystem.EncodingType.Base64});const d=await request('/api/mobile/orders','POST',{vendorId:selected.id,type:'print',pickup:'ASAP',print:{pages:Number(printPages)||1,copies:Number(printCopies)||1,color:'bw',sides:'single',binding:'none',fileName:printFile.name,size:printFile.size||0},file:`data:application/pdf;base64,${base64}`});setPrintFile(null);setSelected(null);await refresh();Alert.alert('Print job placed',`Pickup token ${d.order.token} · ${money(d.order.total)}`)}catch(e){Alert.alert('Could not place print job',e.message)}}
@@ -143,6 +164,38 @@ function CampusVendors() {
     setTab(nextTab);
     setSelected(null);
     setError('');
+    setGoogleNotice('');
+  }
+
+  function clearService() {
+    setService(null);
+    setCategory('All');
+  }
+
+  function browse(nextService = null) {
+    setService(nextService);
+    setCategory('All');
+    setQuery('');
+    goTo('Explore');
+  }
+
+  async function startGoogleSignIn() {
+    if (!googleEnabled || (Platform.OS !== 'web' && isRunningInExpoGo())) {
+      setGoogleNotice('Google sign-in is unavailable in this preview. You can use email instead.');
+      return;
+    }
+    if (!googleRequest) {
+      setGoogleNotice('Google sign-in is still loading. Try again in a moment.');
+      return;
+    }
+    goTo('Account');
+    setAuthView('login');
+    editEmail();
+    try {
+      await promptGoogle();
+    } catch {
+      setError('Couldn’t open Google sign-in. Try again or use email.');
+    }
   }
 
   function openShop(shop) {
@@ -211,16 +264,22 @@ function CampusVendors() {
             setPrintPages={setPrintPages} setPrintCopies={setPrintCopies}
             pickPrintFile={pickPrintFile} submitPrint={submitPrint}
           />
+        ) : tab === 'Home' ? (
+          <Home me={me} signedIn={!!token} orders={orders} shops={shops} browse={browse}
+            goOrders={() => goTo('Orders')} goMerchant={() => goTo('Shop')}
+            goEmail={() => goTo('Account')} goGoogle={startGoogleSignIn} busy={busy}
+            googleNotice={googleNotice}
+          />
         ) : tab === 'Explore' ? (
           <Explore
             shops={shops} visible={visible} category={category} categories={categories}
             setCategory={setCategory} query={query} setQuery={setQuery}
             loading={loadingDirectory} error={directoryError} refresh={refreshDirectory}
-            onShopPress={openShop} heroImage={HERO_IMAGE}
+            onShopPress={openShop} serviceTitle={services[service]?.title} clearService={clearService}
           />
         ) : tab === 'Orders' ? (
           <Orders signedIn={!!token} orders={orders} shops={shops} money={money}
-            goAccount={() => goTo('Account')} goExplore={() => goTo('Explore')}
+            goAccount={() => goTo('Account')} goExplore={() => browse()}
             cancel={cancelOrder} rate={rateOrder}
           />
         ) : tab === 'Shop' ? (
@@ -236,10 +295,10 @@ function CampusVendors() {
             me={me} signedIn={!!token} authView={authView} pending={pending}
             email={email} code={code} name={name} cls={cls} phone={phone}
             setEmail={setEmail} setCode={setCode} setName={setName} setCls={setCls} setPhone={setPhone}
-            codeSent={codeSent} devCode={devCode} busy={busy} error={error}
+            codeSent={codeSent} devCode={devCode} busy={busy} error={error || googleNotice}
             toggleAuthView={toggleAuthView} editEmail={editEmail}
             submit={pending ? finishProfile : codeSent ? verifyCode : sendCode}
-            googleSignIn={googleEnabled && googleRequest ? () => promptGoogle() : undefined}
+            googleSignIn={startGoogleSignIn}
             feedback={feedbackMessage} setFeedback={setFeedbackMessage} sendFeedback={sendFeedback} logout={logout}
           />
         )}
