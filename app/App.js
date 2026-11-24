@@ -46,6 +46,7 @@ export default function App() {
 function CampusVendors() {
   const [token,setToken]=useState(null), [me,setMe]=useState(null), [shops,setShops]=useState([]), [orders,setOrders]=useState([]), [cart,setCart]=useState([]);
   const [tab, setTab] = useState('Home');
+  const [language, setLanguage] = useState('en');
   const [guestPage, setGuestPage] = useState('Welcome');
   const [restoringSession, setRestoringSession] = useState(true);
   const [sessionNotice, setSessionNotice] = useState('');
@@ -125,6 +126,8 @@ function CampusVendors() {
   useEffect(() => {
     async function load() {
       try {
+        const savedLanguage = await storage.get('app-language').catch(() => null);
+        if (['en', 'hi', 'kn'].includes(savedLanguage)) setLanguage(savedLanguage);
         const [savedStudent, savedMerchant] = await Promise.all([
           storage.get('student-token'),
           storage.get('vendor-token'),
@@ -328,6 +331,40 @@ function CampusVendors() {
     setError('');
   }
   async function vendorRefresh(){try{const d=await request('/api/sync');setShops(normalize(d.vendors));setVendorOrders(normalize(d.vendorOrders));setVendor(d.vendors?.find(x=>x.id===d.vendorId)||vendor)}catch(e){setError(e.message)}}
+  async function vendorAssistant(text) {
+    const result = await request('/api/mobile/vendor/assistant', 'POST', { text, language }, null, vendorToken);
+    if (result.reply) {
+      try {
+        const speech = await request('/api/mobile/vendor/assistant/speech', 'POST', { text: result.reply, language }, null, vendorToken);
+        result.audioBase64 = speech.audioBase64;
+      } catch (err) {
+        result.speechUnavailable = err.message;
+      }
+    }
+    return result;
+  }
+  async function confirmAssistantAction(action) {
+    if (!action) return;
+    const saveShopPatch = async patch => {
+      const result = await request('/api/vendor/me', 'PUT', patch);
+      setVendor(result.vendor);
+      const directory = await request('/api/sync');
+      setShops(normalize(directory.vendors));
+      return result.vendor;
+    };
+    if (action.type === 'shop_status') return saveShopPatch({ status: action.status });
+    if (action.type === 'queue') return saveShopPatch({ queue: action.queue });
+    if (action.type === 'announcement') return saveShopPatch({ note: action.note });
+    if (action.type === 'add_menu') {
+      const item = { id: `m${Date.now()}`, name: action.name, price: action.price, inStock: true, cat: 'Menu' };
+      return saveShopPatch({ menu: [...(vendor?.menu || []), item] });
+    }
+    if (action.type === 'order_status') {
+      const order = vendorOrders.find(item => String(item.token).toLowerCase() === String(action.orderToken).toLowerCase());
+      if (!order) return Alert.alert('Order not found', 'Refresh your orders and ask the helper again.');
+      return updateOrder(order, action.status);
+    }
+  }
   async function downloadPrint(order) {
     try {
       const { dataUrl } = await request(`/api/vendor/files/${order.id}`);
@@ -550,7 +587,7 @@ function CampusVendors() {
             pickPrintFile={pickPrintFile} submitPrint={submitPrint} submittingOrder={submittingOrder}
           />
         ) : page === 'Home' ? (
-          <Home me={me} orders={orders} shops={shops} browse={browse} goOrders={() => goTo('Orders')} />
+          <Home me={me} orders={orders} shops={shops} browse={browse} goOrders={() => goTo('Orders')} language={language} setLanguage={value => { setLanguage(value); storage.set('app-language', value).catch(() => {}); }} />
         ) : page === 'Explore' ? (
           <Explore
             shops={shops} visible={visible} category={category} categories={categories}
@@ -572,6 +609,7 @@ function CampusVendors() {
             itemName={itemName} setItemName={setItemName} itemPrice={itemPrice} setItemPrice={setItemPrice}
             addItem={addItem} updateOrder={updateOrder} downloadPrint={downloadPrint} signOut={signOutOfShop}
             openPrivacy={() => openPrivacyPage('privacy')}
+            language={language} askAssistant={vendorAssistant} confirmAssistantAction={confirmAssistantAction}
           />
         ) : (
           <Account

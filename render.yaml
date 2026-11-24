@@ -26,3 +26,15 @@ services:
         sync: false
       - key: ADMIN_EMAIL
         sync: false
+      - key: QWEN_API_KEY
+        sync: false
+      - key: QWEN_API_URL
+        value: https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions
+      - key: QWEN_MODEL
+        value: qwen-turbo
+      - key: ELEVENLABS_API_KEY
+        sync: false
+      - key: ELEVENLABS_VOICE_ID
+        sync: false
+      - key: ELEVENLABS_MODEL_ID
+        value: eleven_v3

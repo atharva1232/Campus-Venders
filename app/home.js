@@ -1,8 +1,21 @@
-import React from 'react';
-import { Image, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
+import React, { useEffect, useRef, useState } from 'react';
+import { Image, Pressable, ScrollView, StyleSheet, Text, View, useWindowDimensions } from 'react-native';
 import { Action, Badge, Icon, Panel, colors, styles as S } from './ui';
 
 const heroImage = require('./assets/campus-food.jpg');
+const printImage = require('./assets/campus-print-hero.jpg');
+
+export const appLanguages = [
+  { code: 'en', name: 'English', locale: 'en-IN' },
+  { code: 'hi', name: 'हिन्दी', locale: 'hi-IN' },
+  { code: 'kn', name: 'ಕನ್ನಡ', locale: 'kn-IN' },
+];
+
+const homeCopy = {
+  en: { hello: 'What do you need on campus today?', features: 'Made for campus life', caption: 'Everything nearby, in one place', services: 'Campus services', food: 'Order campus favourites', print: 'Print without the queue', shops: 'Find everyday essentials', lang: 'Language', all: 'All shops', track: 'Track your order' },
+  hi: { hello: 'आज कैंपस में आपको क्या चाहिए?', features: 'कैंपस जीवन के लिए', caption: 'सब कुछ पास में, एक ही जगह', services: 'कैंपस सेवाएँ', food: 'पसंदीदा खाना ऑर्डर करें', print: 'लाइन के बिना प्रिंट करें', shops: 'ज़रूरी दुकानें खोजें', lang: 'भाषा', all: 'सभी दुकानें', track: 'ऑर्डर ट्रैक करें' },
+  kn: { hello: 'ಇಂದು ಕ್ಯಾಂಪಸ್‌ನಲ್ಲಿ ನಿಮಗೆ ಏನು ಬೇಕು?', features: 'ಕ್ಯಾಂಪಸ್ ಜೀವನಕ್ಕಾಗಿ', caption: 'ಹತ್ತಿರದಲ್ಲಿರುವ ಎಲ್ಲವೂ ಒಂದೇ ಸ್ಥಳದಲ್ಲಿ', services: 'ಕ್ಯಾಂಪಸ್ ಸೇವೆಗಳು', food: 'ಇಷ್ಟದ ಆಹಾರ ಆರ್ಡರ್ ಮಾಡಿ', print: 'ಸರದಿಯಿಲ್ಲದೆ ಪ್ರಿಂಟ್ ಮಾಡಿ', shops: 'ಅಗತ್ಯ ಅಂಗಡಿಗಳನ್ನು ಹುಡುಕಿ', lang: 'ಭಾಷೆ', all: 'ಎಲ್ಲಾ ಅಂಗಡಿಗಳು', track: 'ಆರ್ಡರ್ ಸ್ಥಿತಿ' },
+};
 
 export const services = {
   food: {
@@ -87,7 +100,25 @@ export function Welcome({ goEmail, goGoogle, goMerchant, googleNotice, sessionNo
   );
 }
 
-export function Home({ me, orders, shops, browse, goOrders }) {
+export function Home({ me, orders, shops, browse, goOrders, language = 'en', setLanguage = () => {} }) {
+  const carousel = useRef(null);
+  const [slide, setSlide] = useState(0);
+  const { width: screenWidth } = useWindowDimensions();
+  const cardWidth = Math.min(screenWidth - 36, 564);
+  const copy = homeCopy[language] || homeCopy.en;
+  const slides = [
+    { image: heroImage, title: copy.food, subtitle: 'Discover nearby menus and order ahead', service: 'food' },
+    { image: printImage, title: copy.print, subtitle: 'Send a PDF and collect it when ready', service: 'printing' },
+    { image: require('./assets/campus-shops-hero.jpg'), title: copy.shops, subtitle: 'Stationery, snacks, printing, and more', service: 'campus' },
+  ];
+  useEffect(() => {
+    const timer = setInterval(() => setSlide(current => {
+      const next = (current + 1) % slides.length;
+      carousel.current?.scrollTo({ x: next * cardWidth, animated: true });
+      return next;
+    }), 5000);
+    return () => clearInterval(timer);
+  }, [cardWidth, slides.length]);
   const firstName = me?.name?.trim().split(/\s+/)[0];
   const nextPickup = orders.find(order => order.status === 'ready')
     || orders.find(order => ['placed', 'accepted'].includes(order.status));
@@ -97,24 +128,43 @@ export function Home({ me, orders, shops, browse, goOrders }) {
     <ScrollView style={S.scroll} contentContainerStyle={styles.content}>
       <View style={[S.panel, styles.dashboardIntro]}>
         <Text accessibilityRole="header" style={S.pageTitle}>{firstName ? `Hi, ${firstName}` : 'Campus home'}</Text>
-        <Text style={S.body}>What do you need on campus today?</Text>
+        <Text style={S.body}>{copy.hello}</Text>
+      </View>
+
+      <View style={styles.languagePanel}>
+        <View style={S.titleRow}><Text style={S.label}>{copy.lang}</Text><Text style={S.caption}>App and voice assistant</Text></View>
+        <View style={styles.languageOptions}>
+          {appLanguages.map(item => <Pressable key={item.code} accessibilityRole="radio" accessibilityState={{ selected: language === item.code }} onPress={() => setLanguage(item.code)} style={[styles.languageOption, language === item.code && styles.languageSelected]}><Text style={[styles.languageText, language === item.code && styles.languageTextSelected]}>{item.name}</Text></Pressable>)}
+        </View>
+      </View>
+
+      <View style={styles.carouselSection}>
+        <View style={S.titleRow}><Text style={S.sectionTitle}>{copy.features}</Text><Text style={S.caption}>Auto preview · swipe to explore</Text></View>
+        <ScrollView ref={carousel} horizontal pagingEnabled showsHorizontalScrollIndicator={false} snapToInterval={cardWidth} decelerationRate="fast" onMomentumScrollEnd={event => setSlide(Math.round(event.nativeEvent.contentOffset.x / cardWidth))}>
+          {slides.map((item, index) => <Pressable key={index} accessibilityRole="button" accessibilityLabel={item.title} onPress={() => browse(item.service)} style={[styles.featureCard, { width: cardWidth }]}>
+            <Image source={item.image} style={styles.featureImage} resizeMode="cover" />
+            <View style={styles.featureShade} />
+            <View style={styles.featureCopy}><Text style={styles.featureTitle}>{item.title}</Text><Text style={styles.featureSubtitle}>{item.subtitle}</Text></View>
+          </Pressable>)}
+        </ScrollView>
+        <View style={styles.carouselDots}>{slides.map((_, i) => <View key={i} style={[styles.carouselDot, slide === i && styles.carouselDotActive]} />)}</View>
       </View>
 
       <View style={styles.serviceSection}>
         <View style={S.titleRow}>
-          <Text accessibilityRole="header" style={S.sectionTitle}>Campus services</Text>
+          <Text accessibilityRole="header" style={S.sectionTitle}>{copy.services}</Text>
           <Pressable accessibilityRole="button" onPress={() => browse()} style={styles.textButton}>
-            <Text style={styles.textButtonLabel}>All shops</Text>
+            <Text style={styles.textButtonLabel}>{copy.all}</Text>
             <Icon name="chevron-forward" color={colors.orangeDark} size={15} />
           </Pressable>
         </View>
         <View style={styles.gridRow}>
-          <ServiceCard {...services.food} onPress={() => browse('food')} />
-          <ServiceCard {...services.printing} onPress={() => browse('printing')} />
+          <ServiceCard {...services.food} description={copy.food} onPress={() => browse('food')} />
+          <ServiceCard {...services.printing} description={copy.print} onPress={() => browse('printing')} />
         </View>
         <View style={styles.gridRow}>
-          <ServiceCard {...services.campus} onPress={() => browse('campus')} />
-          <ServiceCard title="Track orders" description="See your pickup token and status" icon="receipt-outline" tint="#f8ecd7" onPress={goOrders} />
+          <ServiceCard {...services.campus} description={copy.shops} onPress={() => browse('campus')} />
+          <ServiceCard title={copy.track} description="Pickup token and live status" icon="receipt-outline" tint="#f8ecd7" onPress={goOrders} />
         </View>
       </View>
 
@@ -141,6 +191,22 @@ const styles = StyleSheet.create({
   welcomeService: { flex: 1, alignItems: 'center', gap: 3 },
   merchantLink: { flexDirection: 'row', justifyContent: 'center', alignItems: 'center', gap: 4, minHeight: 44 },
   dashboardIntro: { backgroundColor: colors.sage, paddingVertical: 20, gap: 6 },
+  languagePanel: { backgroundColor: colors.surface, borderColor: colors.line, borderWidth: 1, borderRadius: 16, padding: 13, gap: 9 },
+  languageOptions: { flexDirection: 'row', gap: 8 },
+  languageOption: { flex: 1, minHeight: 40, borderRadius: 12, justifyContent: 'center', alignItems: 'center', borderWidth: 1, borderColor: colors.line, backgroundColor: colors.surface },
+  languageSelected: { backgroundColor: colors.forest, borderColor: colors.forest },
+  languageText: { color: colors.forest, fontSize: 12, fontWeight: '800' },
+  languageTextSelected: { color: colors.white },
+  carouselSection: { gap: 9 },
+  featureCard: { height: 206, borderRadius: 20, overflow: 'hidden', backgroundColor: colors.forest },
+  featureImage: { ...StyleSheet.absoluteFillObject, width: '100%', height: '100%' },
+  featureShade: { ...StyleSheet.absoluteFillObject, backgroundColor: 'rgba(10,28,23,0.28)' },
+  featureCopy: { position: 'absolute', left: 16, right: 16, bottom: 15, gap: 4 },
+  featureTitle: { color: colors.white, fontWeight: '900', fontSize: 21, textShadowColor: 'rgba(0,0,0,0.5)', textShadowRadius: 5 },
+  featureSubtitle: { color: colors.white, fontSize: 12, fontWeight: '600', textShadowColor: 'rgba(0,0,0,0.5)', textShadowRadius: 4 },
+  carouselDots: { flexDirection: 'row', gap: 6, justifyContent: 'center' },
+  carouselDot: { width: 6, height: 6, borderRadius: 3, backgroundColor: colors.line },
+  carouselDotActive: { width: 18, backgroundColor: colors.orange, borderRadius: 5 },
   serviceSection: { gap: 8 },
   gridRow: { flexDirection: 'row', gap: 8 },
   serviceCard: {

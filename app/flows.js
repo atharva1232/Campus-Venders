@@ -1,5 +1,8 @@
 import React, { useState } from 'react';
-import { Pressable, ScrollView, Switch, Text, View } from 'react-native';
+import { Alert, Platform, Pressable, ScrollView, Switch, Text, View } from 'react-native';
+import { Audio } from 'expo-av';
+import * as FileSystem from 'expo-file-system/legacy';
+import { ExpoSpeechRecognitionModule, useSpeechRecognitionEvent } from 'expo-speech-recognition';
 import { Action, Badge, Choice, Empty, Field, Icon, Panel, Stepper, colors, styles as S } from './ui';
 
 function Page({ title, children }) {
@@ -119,6 +122,7 @@ export function Merchant({
   vendor, orders, form, setForm, busy, error, signIn, apply, money, updateShop,
   merchantCode, resetMerchantCode, openPrivacy,
   shopNote, setShopNote, itemName, setItemName, itemPrice, setItemPrice, addItem, updateOrder, downloadPrint, signOut,
+  language = 'en', askAssistant, confirmAssistantAction,
 }) {
   const [credentials, setCredentials] = useState({ shop: '', email: '', code: '' });
 
@@ -159,6 +163,7 @@ export function Merchant({
             <Field label="Price in rupees" keyboardType="decimal-pad" value={itemPrice} onChangeText={setItemPrice} />
             <Action label="Add menu item" icon="add" onPress={addItem} />
           </Panel>
+          <VendorVoiceAssistant language={language} orders={orders} ask={askAssistant} confirm={confirmAssistantAction} />
           <Text style={S.sectionTitle}>Orders</Text>
           {orders.length === 0 && <Empty icon="receipt-outline" title="No orders yet" />}
           {orders.map(order => (
@@ -226,5 +231,90 @@ export function Merchant({
         </>
       )}
     </Page>
+  );
+}
+
+function VendorVoiceAssistant({ language, orders, ask, confirm }) {
+  const [question, setQuestion] = useState('');
+  const [reply, setReply] = useState('');
+  const [action, setAction] = useState(null);
+  const [working, setWorking] = useState(false);
+  const [listening, setListening] = useState(false);
+  const languageName = { en: 'English', hi: 'Hindi', kn: 'Kannada' }[language] || 'English';
+  useSpeechRecognitionEvent('start', () => setListening(true));
+  useSpeechRecognitionEvent('end', () => setListening(false));
+  useSpeechRecognitionEvent('result', event => {
+    const result = event.results?.[0];
+    if (result?.transcript) {
+      setQuestion(result.transcript);
+      if (event.isFinal) submit(result.transcript);
+    }
+  });
+  useSpeechRecognitionEvent('error', event => {
+    setListening(false);
+    if (event.error !== 'no-speech' && event.error !== 'aborted') Alert.alert('Voice input unavailable', 'Try speaking again or type your request.');
+  });
+
+  async function playAudio(base64) {
+    if (!base64 || Platform.OS === 'web') return;
+    try {
+      const path = `${FileSystem.cacheDirectory}campus-vendors-helper.mp3`;
+      await FileSystem.writeAsStringAsync(path, base64, { encoding: FileSystem.EncodingType.Base64 });
+      const { sound } = await Audio.Sound.createAsync({ uri: path }, { shouldPlay: true });
+      sound.setOnPlaybackStatusUpdate(status => { if (status.didJustFinish) sound.unloadAsync(); });
+    } catch { /* Text reply remains available when audio playback is unavailable. */ }
+  }
+
+  async function submit(text = question) {
+    const clean = String(text || '').trim();
+    if (!clean || !ask || working) return;
+    setWorking(true);
+    setAction(null);
+    try {
+      const result = await ask(clean);
+      setReply(result.reply || '');
+      setAction(result.action || null);
+      await playAudio(result.audioBase64);
+    } catch (err) {
+      setReply(err.message || 'Could not reach the voice helper.');
+    } finally { setWorking(false); }
+  }
+
+  async function startListening() {
+    if (Platform.OS === 'web') return Alert.alert('Voice input', 'Voice capture is available in the Android or iOS app. You can type here.');
+    try {
+      const permission = await ExpoSpeechRecognitionModule.requestPermissionsAsync();
+      if (!permission.granted) return Alert.alert('Microphone permission needed', 'Allow microphone access to speak to the shop helper.');
+      setQuestion('');
+      ExpoSpeechRecognitionModule.start({ lang: { en: 'en-IN', hi: 'hi-IN', kn: 'kn-IN' }[language] || 'en-IN', interimResults: true, continuous: false, maxAlternatives: 1 });
+    } catch { Alert.alert('Voice input unavailable', 'Use the text box to ask the helper.'); }
+  }
+
+  async function confirmSuggestion() {
+    const suggested = action;
+    if (!suggested || !confirm) return;
+    setWorking(true);
+    try { await confirm(suggested); setAction(null); setReply(language === 'hi' ? 'हो गया।' : language === 'kn' ? 'ಆಯಿತು.' : 'Done.'); }
+    catch (err) { setReply(err.message || 'Could not save that change.'); }
+    finally { setWorking(false); }
+  }
+
+  const actionLabel = action?.type === 'shop_status' ? `Set shop ${action.status}`
+    : action?.type === 'queue' ? `Set queue to ${action.queue}`
+      : action?.type === 'announcement' ? `Save announcement: ${action.note}`
+        : action?.type === 'add_menu' ? `Add ${action.name} · ₹${action.price}`
+          : action?.type === 'order_status' ? `Update pickup ${action.orderToken} to ${action.status}` : '';
+
+  return (
+    <Panel title={language === 'hi' ? 'आवाज़ से दुकान चलाएँ' : language === 'kn' ? 'ಧ್ವನಿಯಿಂದ ಅಂಗಡಿ ನಿರ್ವಹಿಸಿ' : 'Talk to your shop helper'} description={language === 'hi' ? 'हिंदी, ಕನ್ನಡ या अंग्रेज़ी में बोलें। बदलाव सेव करने से पहले आपकी पुष्टि ज़रूरी है।' : language === 'kn' ? 'ಕನ್ನಡ, ಹಿಂದಿ ಅಥವಾ ಇಂಗ್ಲಿಷ್‌ನಲ್ಲಿ ಮಾತನಾಡಿ. ಬದಲಾವಣೆ ಉಳಿಸಲು ಮೊದಲು ನಿಮ್ಮ ದೃಢೀಕರಣ ಬೇಕು.' : `Speak in ${languageName}. Review and confirm before any shop change is saved.`}>
+      <Field label={language === 'hi' ? 'आपका अनुरोध' : language === 'kn' ? 'ನಿಮ್ಮ ವಿನಂತಿ' : 'Your request'} value={question} onChangeText={setQuestion} placeholder={language === 'hi' ? 'जैसे: दुकान खोलो' : language === 'kn' ? 'ಉದಾ: ಅಂಗಡಿ ತೆರೆಯಿರಿ' : 'For example: open my shop'} multiline />
+      <View style={S.wrapRow}>
+        <Action label={listening ? 'Listening…' : language === 'hi' ? 'बोलें' : language === 'kn' ? 'ಮಾತನಾಡಿ' : 'Speak'} icon="mic-outline" tone="secondary" onPress={startListening} disabled={working || listening} />
+        <Action label={working ? 'Please wait…' : language === 'hi' ? 'पूछें' : language === 'kn' ? 'ಕೇಳಿ' : 'Ask helper'} icon="chatbubble-ellipses-outline" onPress={() => submit()} disabled={working || !question.trim()} />
+      </View>
+      {!!reply && <Text accessibilityRole="alert" style={S.body}>{reply}</Text>}
+      {!!actionLabel && <View style={S.panel}><Text style={S.label}>{actionLabel}</Text><Text style={S.caption}>Confirm this suggested change</Text><Action label={language === 'hi' ? 'हाँ, सेव करें' : language === 'kn' ? 'ಹೌದು, ಉಳಿಸಿ' : 'Confirm and save'} icon="checkmark-circle-outline" onPress={confirmSuggestion} disabled={working} /><Action label={language === 'hi' ? 'नहीं' : language === 'kn' ? 'ಬೇಡ' : 'Discard'} tone="secondary" onPress={() => setAction(null)} disabled={working} /></View>}
+      <Text style={S.caption}>{orders.length ? `${orders.length} shop order${orders.length === 1 ? '' : 's'} available for status updates.` : 'The helper can answer shop questions and draft simple updates.'}</Text>
+    </Panel>
   );
 }
