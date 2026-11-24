@@ -755,6 +755,19 @@ const htmlEscape = value => String(value).replace(/[&<>"']/g, char => ({
   "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;",
 })[char]);
 const clockTime = /^(?:[01]\d|2[0-3]):[0-5]\d$/;
+function normalizeShopTime(value, fallback) {
+  const raw = str(value, 20).trim();
+  if (!raw) return fallback;
+  const match = raw.match(/^(\d{1,2})(?::(\d{1,2}))?\s*(am|pm)?$/i);
+  if (!match) return raw;
+  let hour = Number(match[1]);
+  const minute = Number(match[2] || 0);
+  const meridiem = match[3]?.toLowerCase();
+  if (minute > 59 || (meridiem ? hour < 1 || hour > 12 : hour > 23)) return raw;
+  if (meridiem === "am" && hour === 12) hour = 0;
+  if (meridiem === "pm" && hour !== 12) hour += 12;
+  return `${String(hour).padStart(2, "0")}:${String(minute).padStart(2, "0")}`;
+}
 
 app.post("/api/mobile/vendor-applications", merchantApplicationLimit, wrap(async (req, res) => {
   if (!ADMIN_EMAIL) return fail(res, 503, "Shop registration email is not configured.");
@@ -765,8 +778,8 @@ app.post("/api/mobile/vendor-applications", merchantApplicationLimit, wrap(async
   const phone = cleanPhone(body.phone);
   const category = str(body.category, 24);
   const location = str(body.location, 60);
-  const openTime = str(body.openTime, 5) || "08:00";
-  const closeTime = str(body.closeTime, 5) || "20:00";
+  const openTime = normalizeShopTime(body.openTime, "08:00");
+  const closeTime = normalizeShopTime(body.closeTime, "20:00");
   if (nameKey.length < 2 || !GMAIL.test(ownerEmail) || !PHONE.test(phone) || !category || !location) {
     return fail(res, 400, "Enter a shop name, category, location, owner Gmail, and valid mobile number.");
   }

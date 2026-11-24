@@ -18,6 +18,18 @@ const orderSummary = order => order.type === 'print'
   ? order.print?.fileName || 'PDF print job'
   : order.items?.map(item => `${item.qty} × ${item.name}`).join(', ');
 
+function formatShopTime(value) {
+  const match = String(value || '').trim().match(/^(\d{1,2})(?::(\d{1,2}))?\s*(am|pm)?$/i);
+  if (!match) return String(value || '').trim();
+  let hour = Number(match[1]);
+  const minute = Number(match[2] || 0);
+  const meridiem = match[3]?.toLowerCase();
+  if (minute > 59 || (meridiem ? hour < 1 || hour > 12 : hour > 23)) return String(value || '').trim();
+  if (meridiem === 'am' && hour === 12) hour = 0;
+  if (meridiem === 'pm' && hour !== 12) hour += 12;
+  return `${String(hour).padStart(2, '0')}:${String(minute).padStart(2, '0')}`;
+}
+
 export function Orders({ signedIn, orders, goAccount, goExplore, money, cancel, rate, shops }) {
   return (
     <Page title="Your orders">
@@ -142,6 +154,14 @@ export function Merchant({
     return <Field label={label} value={String(form[key] ?? '')} onChangeText={value => setForm(previous => ({ ...previous, [key]: value }))} {...options} />;
   }
 
+  function timeField(label, key, placeholder) {
+    return field(label, key, {
+      placeholder,
+      style: { flex: 1 },
+      onBlur: () => setForm(previous => ({ ...previous, [key]: formatShopTime(previous[key]) })),
+    });
+  }
+
   return (
     <Page title={vendor?.name || (vendor ? 'Shop dashboard' : 'Merchant tools')}>
       {error ? <Text accessibilityRole="alert" style={S.feedback}>{error}</Text> : null}
@@ -218,16 +238,17 @@ export function Merchant({
               resetMerchantCode();
             }} />}
           </Panel>
-          <Panel title="Register a shop" description="Your shop appears in the directory after approval by email.">
+          <Panel title="Register a shop" description="Add the required shop details below. We’ll email you when the admin reviews it.">
             {field('Shop name', 'name')}
             {field('Category', 'category', { placeholder: 'Food, print, stationery…' })}
             {field('Location', 'location')}
-            {field('Phone', 'phone', { keyboardType: 'phone-pad' })}
-            {field('Owner email', 'ownerEmail', { keyboardType: 'email-address', autoCapitalize: 'none' })}
+            {field('Phone (10 digits)', 'phone', { placeholder: '9876543210', keyboardType: 'phone-pad' })}
+            {field('Owner Gmail', 'ownerEmail', { placeholder: 'you@gmail.com', keyboardType: 'email-address', autoCapitalize: 'none' })}
             <View style={S.wrapRow}>
-              {field('Opens at', 'openTime', { placeholder: '08:00', style: { flex: 1 } })}
-              {field('Closes at', 'closeTime', { placeholder: '20:00', style: { flex: 1 } })}
+              {timeField('Opens at', 'openTime', '08:00')}
+              {timeField('Closes at', 'closeTime', '20:00')}
             </View>
+            <Text style={S.caption}>Use 24-hour time. For example, 8 becomes 08:00; 8 PM becomes 20:00.</Text>
             <View style={S.itemRow}>
               <Text style={S.label}>Offers printing</Text>
               <Switch accessibilityLabel="Offers printing" value={!!form.printShop} trackColor={{ true: colors.forest }} onValueChange={printShop => setForm(previous => ({ ...previous, printShop }))} />

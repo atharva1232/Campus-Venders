@@ -64,7 +64,7 @@ function CampusVendors() {
   const webGoogleClientId = process.env.EXPO_PUBLIC_GOOGLE_WEB_CLIENT_ID;
   const [googleRequest, googleResponse, promptGoogle] = Google.useIdTokenAuthRequest({
     clientId: webGoogleClientId || 'preview-disabled.apps.googleusercontent.com',
-    selectAccount: true,
+    prompt: 'select_account',
   });
   const request = useCallback(async (path, method = 'GET', body = null, auth = token, shopToken = vendorToken) => {
     const headers = { 'content-type': 'application/json' };

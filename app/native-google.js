@@ -14,6 +14,8 @@ export async function signInWithNativeGoogle() {
   }
   try {
     if (Platform.OS === 'android') await GoogleSignin.hasPlayServices({ showPlayServicesUpdateDialog: true });
+    // Clear this app's cached Google account so the native flow offers the device account picker.
+    await GoogleSignin.signOut();
     const result = await GoogleSignin.signIn();
     if (!isSuccessResponse(result)) return null;
     if (!result.data.idToken) throw new Error('Google did not return an ID token. Try signing in with email.');
