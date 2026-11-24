@@ -91,6 +91,7 @@
           ${link("#/orders", "My orders", "orders", live)}
           ${link("#/dashboard", "For vendors", "dashboard")}
           ${link("#/about", "About", "about")}
+          ${link("#/admin", "Admin", "admin")}
         </nav>
         <a href="#/cart" class="cartbtn ${cartN ? "has" : ""}" aria-label="Cart">🛒<span>${cartN || ""}</span></a>
         ${(() => {
@@ -195,7 +196,7 @@
         ${gmailField()}
         <button class="btn primary block" type="submit">Email me a sign-in code</button>
         <a class="btn block google-btn" href="/api/auth/google">Continue with Google</a>
-        <p class="muted small">For account security, sign-in IP and browser details are stored for 90 days. An IP matching a banned account can trigger a ban; shared campus Wi-Fi may cause a mistaken match.</p>
+        <p class="muted small">For account security, sign-in IP address and browser details are stored for 90 days.</p>
       </form>`;
     if (login.step === "email" && login.mode === "create") body = `
       <p class="eyebrow">Students · step 1 of 2</p>
@@ -1372,6 +1373,65 @@
     `);
   }
 
+  /* ---------- ADMIN ---------- */
+  const adminUi = { step: "email", email: "", lastSent: 0 };
+  async function adminPage() {
+    if (!S.adminToken()) {
+      const step = adminUi.step;
+      page("admin", `<div class="login-wrap"><p class="eyebrow">Administration</p><h1>Admin sign in</h1><p class="lead">Use the configured admin Gmail. We’ll email a one-time code before showing shop applications or account security events.</p>
+        <form id="adminLogin" class="card form">${step === "email" ? `<label>Admin Gmail<input name="email" type="email" required autocomplete="email" value="${esc(adminUi.email)}" placeholder="admin@gmail.com"></label><button class="btn primary block">Send admin code</button>` : `<p class="muted">Code sent to <b>${esc(adminUi.email)}</b>.</p><label>One-time code<input name="code" required inputmode="numeric" autocomplete="one-time-code" pattern="[0-9]{6}" maxlength="6"></label><button class="btn primary block">Verify and open admin</button><button class="linkbtn" type="button" id="adminBack">Use a different email</button>`}</form></div>`);
+      const form = document.getElementById("adminLogin");
+      form.onsubmit = async (e) => {
+        e.preventDefault(); const btn = form.querySelector("button[type=submit],button:not([type])"); btn.disabled = true;
+        if (adminUi.step === "email") {
+          adminUi.email = form.email.value.trim().toLowerCase();
+          const r = await S.adminSendCode(adminUi.email);
+          btn.disabled = false;
+          if (r.error) return toast(r.error, "err");
+          adminUi.step = "code"; adminUi.lastSent = Date.now();
+          if (r.devCode) toast("Local admin test code: " + r.devCode, "ok");
+          else toast("Admin code sent to Gmail", "ok");
+          return adminPage();
+        }
+        const r = await S.adminVerify(form.code.value);
+        btn.disabled = false;
+        if (r.error) return toast(r.error, "err");
+        adminUi.step = "email"; toast("Admin access verified", "ok"); return adminPage();
+      };
+      const back = document.getElementById("adminBack");
+      if (back) back.onclick = () => { adminUi.step = "email"; adminPage(); };
+      return;
+    }
+    const [apps, feeData, security] = await Promise.all([S.adminApplications(), S.adminSettings(), S.adminSecurityEvents()]);
+    if ([apps, feeData, security].some((x) => x.status === 401)) { await S.adminLogout(); return adminPage(); }
+    const error = apps.error || feeData.error || security.error;
+    if (error) return page("admin", `<div class="card"><h1>Admin dashboard unavailable</h1><p class="muted">${esc(error)}</p><button class="btn" id="adminRetry">Retry</button></div>`), document.getElementById("adminRetry").onclick = adminPage;
+    const settings = feeData.settings || { warning1Percent: 5, warning2Percent: 10 };
+    const applications = apps.applications || [];
+    const events = security.events || [];
+    page("admin", `<div class="dash-head"><div><p class="eyebrow">Admin workspace</p><h1>Review & safety</h1></div><button class="btn" id="adminLogout">Sign out</button></div>
+      <section class="card sec"><div class="dash-head"><div><h2>Shop applications</h2><p class="muted small">New shops stay hidden until you approve them.</p></div><span class="badge ${applications.length ? "" : "zero"}">${applications.length}</span></div>
+        ${applications.length ? `<div class="list">${applications.map((a) => `<article class="card application"><div class="order-top"><div class="avatar">${esc(a.emoji || "🏪")}</div><div class="grow"><h3>${esc(a.name)}</h3><div class="muted small">${esc(a.category)} · ${esc(a.location)} · ${Number(a.distance) || 0} m</div></div><span class="ostatus os-placed">Pending review</span></div><div class="row2 small"><div><b>Owner</b><br>${esc(a.ownerEmail)}</div><div><b>Phone</b><br>${esc(a.phone)}</div><div><b>Pincode</b><br>${esc(a.pincode)}</div><div><b>Hours</b><br>${(a.hours || []).map((h) => `${esc(fmtTime(h[0]))}–${esc(fmtTime(h[1]))}`).join(" · ")}</div></div><p class="muted small">${a.print ? `Print rates: B/W ₹${esc(a.print.bw)}, colour ₹${esc(a.print.color)}, binding ₹${esc(a.print.binding)}` : "Food / retail shop"} · submitted ${new Date(a.submittedAt).toLocaleString("en-IN")}</p><div class="inline"><button class="btn primary small" data-app-action="approve" data-app-id="${esc(a.id)}">Approve shop</button><button class="btn small" data-app-action="reject" data-app-id="${esc(a.id)}">Reject</button></div></article>`).join("")}</div>` : `<div class="empty"><h3>All caught up</h3><p class="muted">New merchant applications will appear here.</p></div>`}
+      </section>
+      <section class="card sec"><h2>Cancellation fee settings</h2><p class="muted small">The first and second warnings add a percentage of the next order total for the merchant. A third warning suspends ordering.</p><form id="feeSettings" class="row3 form"><label>Warning 1 fee (%)<input name="warning1" type="number" min="0" max="50" step="0.5" value="${esc(settings.warning1Percent)}"></label><label>Warning 2 fee (%)<input name="warning2" type="number" min="0" max="50" step="0.5" value="${esc(settings.warning2Percent)}"></label><button class="btn primary" type="submit">Save fee settings</button></form></section>
+      <section class="card sec"><h2>Recent sign-ins</h2><p class="muted small">IP addresses are security signals, not unique device IDs. Shared addresses can belong to different people.</p>${events.length ? `<div class="table-scroll"><table class="admin-table"><thead><tr><th>Account</th><th>IP address</th><th>Method</th><th>When</th><th>Signal</th></tr></thead><tbody>${events.map((e) => `<tr><td>${esc(e.email)}</td><td class="mono">${esc(e.ip)}</td><td>${esc(e.method)}</td><td>${new Date(e.at).toLocaleString("en-IN")}</td><td>${e.sharedAccounts > 1 ? `<span class="pill pill-busy">Shared by ${e.sharedAccounts} accounts</span>` : `<span class="muted">Single account</span>`}</td></tr>`).join("")}</tbody></table></div>` : `<p class="muted">Sign-in history will appear here.</p>`}</section>`);
+    document.getElementById("adminLogout").onclick = async () => { await S.adminLogout(); adminPage(); };
+    document.getElementById("feeSettings").onsubmit = async (e) => {
+      e.preventDefault();
+      const r = await S.saveAdminSettings({ warning1Percent: Number(e.target.warning1.value), warning2Percent: Number(e.target.warning2.value) });
+      if (r.error) return toast(r.error, "err");
+      toast("Warning fee percentages saved", "ok"); adminPage();
+    };
+    app.querySelectorAll("[data-app-action]").forEach((btn) => btn.onclick = async () => {
+      const action = btn.dataset.appAction;
+      if (!(await ask(`${action === "approve" ? "Approve" : "Reject"} this shop application?`, action === "approve" ? "Approve shop" : "Reject"))) return;
+      btn.disabled = true;
+      const r = await S.reviewApplication(btn.dataset.appId, action);
+      if (r.error) { btn.disabled = false; return toast(r.error, "err"); }
+      toast(`${r.name} ${action === "approve" ? "approved" : "rejected"}`, "ok"); adminPage();
+    });
+  }
+
   function notFound() { page("", `<div class="empty big"><h2>Page not found</h2><a class="btn primary" href="#/">Go to directory</a></div>`); }
 
   /* ---------- router ---------- */
@@ -1395,6 +1455,7 @@
       case "blocked": return Auth.blocked ? blockedPage() : loginPage();
       case "account": return accountPage();
       case "poster": return poster();
+      case "admin": return adminPage();
       default: return notFound();
     }
   }

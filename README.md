@@ -8,11 +8,11 @@ Team: Aarush Sequeira, Atharva Patil, Akshay B, Anjney Rohit Shah · SDG 9 & SDG
 - **Search and filters**: search by shop or item ("dosa", "xerox"), filter by category, show only open shops, sort by wait, distance or rating
 - **Menu and prices**: grouped menus, out-of-stock items struck through, timings, call and WhatsApp buttons
 - **Food pre-order**: add to cart, choose a pickup time, get a token (e.g. `A-101`), and watch it move Sent → Preparing → Ready → Collected
-- **Student cancellations**: the first two cancellations add a 5% then 10% fee to the next order; a third warning suspends ordering
+- **Student cancellations**: first two cancellations add an admin-configurable percentage fee to the next order; a third warning suspends ordering
 - **Print job upload**: attach a PDF (pages are counted automatically), pick copies, colour, sides and binding, see a live price estimate, and choose a pickup slot
 - **Vendor dashboard**: one-tap status, queue counter, announcement, accept/ready/collected for orders, download print files, edit stock and prices, add items, share status on WhatsApp
 - **Merchant applications**: new merchants submit shop details and owner Gmail; the app emails the admin, and the shop stays hidden until approved
-- **Email approvals & security notices**: the admin receives one-time approve/reject links for shop applications and security emails when an account is suspended
+- **Admin workspace**: approve/reject applications, adjust warning-fee percentages, and review recent sign-in IPs for possible account sharing
 - **Sign-in**: email OTP on every student sign-in, with optional Google sign-in when OAuth is configured
 - **Feedback**: students rate a shop after collecting an order
 - **QR poster**: a printable poster at `#/poster`
@@ -23,7 +23,7 @@ Team: Aarush Sequeira, Atharva Patil, Akshay B, Anjney Rohit Shah · SDG 9 & SDG
 Everything it connects to is set with environment variables on that service:
 - **Data**: MongoDB Atlas, free M0 cluster (student accounts, shops, menus, orders, print files, feedback, warnings, blocks)
 - **Emails**: sign-in codes and merchant-application notices sent through Brevo
-- **Admin notifications**: `ADMIN_EMAIL` receives merchant applications and IP-based suspension alerts
+- **Admin**: `ADMIN_EMAIL` receives applications and admin OTPs
 - **Google sign-in**: optional OAuth 2.0 credentials
 - **Code**: https://github.com/atharva1232/Campus-Venders (every push to `main` redeploys)
 
@@ -47,7 +47,7 @@ Without `MONGODB_URI` it uses a temporary in-memory MongoDB (downloaded once, ~6
 | `MONGODB_URI` | MongoDB Atlas connection string (`mongodb+srv://…`) |
 | `BREVO_API_KEY` | Brevo API key (SMTP & API → API Keys) |
 | `BREVO_SENDER_EMAIL` | `atharvap3212@gmail.com` (a verified sender in Brevo) |
-| `ADMIN_EMAIL` | Gmail address that receives merchant applications and security alerts |
+| `ADMIN_EMAIL` | Gmail address that receives merchant applications and admin sign-in codes |
 | `PUBLIC_URL` | Public app URL used in approval emails, e.g. `https://campus-vendors.onrender.com` |
 | `GOOGLE_CLIENT_ID` | Optional Google OAuth client ID |
 | `GOOGLE_CLIENT_SECRET` | Optional Google OAuth client secret |
@@ -71,9 +71,7 @@ Create an OAuth client in Google Cloud Console. Add the app's public origin as a
 
 ### Warning policy
 
-The first two student cancellations (or confirmed missed pickups) create a warning and attach a 5% or 10% fee to the next order total. The rates are fixed in the server code. Checkout shows the server-calculated fee; it is paid to the merchant at pickup. A third warning suspends ordering for that Gmail account. The app records the sign-in IP and user agent for 90 days. If an IP used by a new account is associated with a suspended account, the new account is also suspended and the affected user and `ADMIN_EMAIL` receive a notice. Shared campus Wi-Fi can make different people appear to use the same IP, so this rule can produce false positives.
-
-Merchant applications are reviewed from one-time approve/reject links in the admin notification email. Links expire after seven days and work once.
+The first two student cancellations (or confirmed missed pickups) create a warning and attach the configured percentage to the next order total. Checkout shows the server-calculated fee; it is paid to the merchant at pickup. A third warning suspends ordering for that Gmail account. Admins can edit the percentages from `#/admin`. The app records the sign-in IP and user agent for 90 days; an IP shared by multiple accounts is a review signal, not proof that the accounts belong to one person.
 
 ## Hosting free (GitHub Pages)
 ```bash

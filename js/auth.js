@@ -45,7 +45,7 @@
       const error = url.searchParams.get("google_error");
       if (googleToken) { set(TOKEN_KEY, googleToken); this.fromLink = true; }
       if (pending) { set(TOKEN_KEY, null); this.me = null; this.pendingToken = pending; this.pendingEmail = email || ""; this.needsProfile = true; this.fromLink = true; }
-      if (error) this.linkError = error === "gmail" ? "Google sign-in requires a verified Gmail account." : error === "blocked" ? "This account is suspended from ordering after three warnings." : error === "ip_block" ? "This account was suspended because its sign-in IP matches a recently suspended account." : error === "unconfigured" ? "Google sign-in hasn’t been configured on this deployment yet." : "Google sign-in could not be completed. Please try again.";
+      if (error) this.linkError = error === "gmail" ? "Google sign-in requires a verified Gmail account." : error === "blocked" ? "This account is suspended from ordering after three warnings." : error === "unconfigured" ? "Google sign-in hasn’t been configured on this deployment yet." : "Google sign-in could not be completed. Please try again.";
       if (googleToken || pending || error) history.replaceState(null, "", location.pathname + location.hash);
       if (this.token()) await this.refresh();
     },

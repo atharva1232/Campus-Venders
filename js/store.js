@@ -8,6 +8,7 @@
   const CACHE_KEY = "cvd_cache_v2";   // last copy of the shop list, so the page draws instantly
   const CART_KEY = "cvd_cart_v2";
   const VENDOR_KEY = "cvd_vendor_token";
+  const ADMIN_KEY = "cvd_admin_token";
   const listeners = new Set();
   const get = (k) => { try { return localStorage.getItem(k); } catch (e) { return null; } };
   const set = (k, v) => { try { v == null ? localStorage.removeItem(k) : localStorage.setItem(k, v); } catch (e) {} };
@@ -15,7 +16,8 @@
   /* fetch wrapper: adds the student / shop sign-in and turns errors into { error } */
   async function api(method, path, body) {
     const headers = { "content-type": "application/json" };
-    const st = window.Auth && window.Auth.token();
+    const adminPath = path.startsWith("/api/admin");
+    const st = adminPath ? get(ADMIN_KEY) : window.Auth && window.Auth.token();
     if (st) headers.authorization = "Bearer " + st;
     const vt = get(VENDOR_KEY);
     if (vt) headers["x-vendor-token"] = vt;
@@ -136,6 +138,19 @@
     async addVendor(v) {
       return api("POST", "/api/vendors", v);
     },
+    async adminSendCode(email) { return api("POST", "/api/admin/send-code", { email }); },
+    async adminVerify(code) {
+      const d = await api("POST", "/api/admin/verify", { code });
+      if (!d.error) set(ADMIN_KEY, d.token);
+      return d;
+    },
+    adminToken() { return get(ADMIN_KEY); },
+    async adminApplications() { return api("GET", "/api/admin/applications"); },
+    async reviewApplication(id, action) { return api("PATCH", "/api/admin/applications/" + encodeURIComponent(id), { action }); },
+    async adminSettings() { return api("GET", "/api/admin/settings"); },
+    async saveAdminSettings(settings) { return api("PUT", "/api/admin/settings", settings); },
+    async adminSecurityEvents() { return api("GET", "/api/admin/security-events"); },
+    async adminLogout() { await api("GET", "/api/admin/logout"); set(ADMIN_KEY, null); },
     /* the signed-in shop edits itself (status, queue, announcement, menu). Shown at once, saved in the
        background, one save after another so quick edits arrive in order. */
     saving: {},          // shop id -> number of saves still on their way
