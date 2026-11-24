@@ -60,10 +60,32 @@ async function sendEmail(to, subject, text, html) {
   return { ok: true };
 }
 
-async function sendMerchantApplication(to, application, reviewUrl) {
+async function sendMerchantApplication(to, application, approveUrl, rejectUrl) {
   const subject = `Shop approval needed: ${application.name}`;
-  const text = `A new shop has applied to Campus Vendors.\n\nShop: ${application.name}\nCategory: ${application.category}\nLocation: ${application.location}\nContact: ${application.phone} · ${application.ownerEmail}\n\nReview application: ${reviewUrl}`;
-  const html = `<div style="font-family:Arial,sans-serif;max-width:560px;margin:auto;padding:24px;border:1px solid #e2dacb;border-radius:14px;color:#16302a"><p style="color:#e2672b;font-size:12px;letter-spacing:2px">CAMPUS VENDORS · ADMIN REVIEW</p><h2>New shop application</h2><p><b>${escapeHtml(application.name)}</b> · ${escapeHtml(application.category)}</p><p>${escapeHtml(application.location)} · ${escapeHtml(application.phone)} · ${escapeHtml(application.ownerEmail)}</p><p><a href="${escapeHtml(reviewUrl)}" style="display:inline-block;padding:12px 18px;background:#e2672b;color:white;text-decoration:none;border-radius:9px">Review application</a></p><p style="color:#6d7f79;font-size:13px">Sign in as the configured admin to approve or reject. The shop will not appear until approved.</p></div>`;
+  const text = `A new shop has applied to Campus Vendors.\n\nShop: ${application.name}\nCategory: ${application.category}\nLocation: ${application.location}\nContact: ${application.phone} · ${application.ownerEmail}\n\nApprove: ${approveUrl}\nReject: ${rejectUrl}\n\nThese one-time links expire in 7 days.`;
+  const html = `<div style="font-family:Arial,sans-serif;max-width:560px;margin:auto;padding:24px;border:1px solid #e2dacb;border-radius:14px;color:#16302a"><p style="color:#e2672b;font-size:12px;letter-spacing:2px">CAMPUS VENDORS · SHOP REQUEST</p><h2>New shop application</h2><p><b>${escapeHtml(application.name)}</b> · ${escapeHtml(application.category)}</p><p>${escapeHtml(application.location)} · ${escapeHtml(application.phone)} · ${escapeHtml(application.ownerEmail)}</p><p><a href="${escapeHtml(approveUrl)}" style="display:inline-block;padding:12px 18px;background:#1d8a4e;color:white;text-decoration:none;border-radius:9px">Approve shop</a> <a href="${escapeHtml(rejectUrl)}" style="display:inline-block;padding:12px 18px;background:#b8432f;color:white;text-decoration:none;border-radius:9px">Reject</a></p><p style="color:#6d7f79;font-size:13px">Each link works once and expires in 7 days.</p></div>`;
+  return sendEmail(to, subject, text, html);
+}
+
+async function sendMerchantDecision(to, name, decision) {
+  const approved = decision === "approved";
+  const subject = `${name}: shop application ${approved ? "approved" : "not approved"}`;
+  const text = `${name}, your Campus Vendors shop application was ${approved ? "approved" : "not approved"}.${approved ? " You can now sign in to the vendor dashboard and add your menu." : " Please contact the Campus Vendors team if you need more information."}`;
+  const html = `<div style="font-family:Arial,sans-serif;max-width:500px;margin:auto;padding:24px;border:1px solid #e2dacb;border-radius:14px;color:#16302a"><h2>${escapeHtml(name)} · ${approved ? "Approved" : "Application update"}</h2><p>${approved ? "Your shop is now listed on Campus Vendors. Sign in to the vendor dashboard to finish setup." : "Your shop application was not approved."}</p></div>`;
+  return sendEmail(to, subject, text, html);
+}
+
+async function sendAccountBanNotice(to, name, reason) {
+  const subject = "Campus Vendors: ordering account banned";
+  const text = `Hi ${name || "there"}, your Campus Vendors account has been banned from ordering now. Reason: ${reason}. You can still browse the directory.`;
+  const html = `<div style="font-family:Arial,sans-serif;max-width:520px;margin:auto;padding:24px;border:1px solid #e2dacb;border-radius:14px;color:#16302a"><h2>Ordering account banned</h2><p>Hi ${escapeHtml(name || "there")}, your account has been banned from placing orders now.</p><p><b>Reason:</b> ${escapeHtml(reason)}</p><p>You can still browse shops and menus. If this is a mistake, reply to this email.</p></div>`;
+  return sendEmail(to, subject, text, html);
+}
+
+async function sendSecurityAlert(to, student, ip, relatedEmail, reason) {
+  const subject = `Account suspended: ${student.email}`;
+  const text = `Campus Vendors suspended ${student.email} from ordering.\nReason: ${reason}\nSign-in IP: ${ip}\nRelated suspended account: ${relatedEmail}`;
+  const html = `<div style="font-family:Arial,sans-serif;max-width:560px;margin:auto;padding:24px;border:1px solid #e2dacb;border-radius:14px;color:#16302a"><h2>Ordering account suspended</h2><p><b>Account:</b> ${escapeHtml(student.email)}</p><p><b>Reason:</b> ${escapeHtml(reason)}</p><p><b>Sign-in IP:</b> ${escapeHtml(ip)}</p><p><b>Related suspended account:</b> ${escapeHtml(relatedEmail)}</p></div>`;
   return sendEmail(to, subject, text, html);
 }
 
@@ -71,4 +93,4 @@ function escapeHtml(value) {
   return String(value || "").replace(/[&<>\"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 }
 
-module.exports = { sendCode, sendMerchantApplication };
+module.exports = { sendCode, sendMerchantApplication, sendMerchantDecision, sendAccountBanNotice, sendSecurityAlert };

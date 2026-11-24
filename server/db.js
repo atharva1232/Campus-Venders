@@ -6,7 +6,7 @@ const path = require("path");
 const vm = require("vm");
 const { MongoClient } = require("mongodb");
 
-const col = {}; // students, blockedEmails, loginCodes, adminCodes, OAuth state, login events, sessions, vendors, applications, settings, orders, feedback
+const col = {}; // students, blockedEmails, loginCodes, OAuth state, login events, sessions, vendors, applications, orders, feedback
 let kind = "";
 
 async function connect() {
@@ -28,8 +28,8 @@ async function connect() {
   await client.connect();
   const db = client.db(process.env.MONGODB_DB || "campus_vendors");
   for (const [k, name] of Object.entries({
-    students: "students", blockedEmails: "blocked_emails", loginCodes: "login_codes", adminCodes: "admin_codes", oauthStates: "oauth_states", loginEvents: "login_events", sessions: "sessions",
-    vendors: "vendors", vendorApplications: "vendor_applications", adminSettings: "admin_settings", orders: "orders", printFiles: "print_files", noShows: "no_shows", feedback: "feedback", counters: "counters",
+    students: "students", blockedEmails: "blocked_emails", loginCodes: "login_codes", oauthStates: "oauth_states", loginEvents: "login_events", sessions: "sessions",
+    vendors: "vendors", vendorApplications: "vendor_applications", orders: "orders", printFiles: "print_files", noShows: "no_shows", feedback: "feedback", counters: "counters",
   })) col[k] = db.collection(name);
 
   await col.students.createIndex({ email: 1 }, { unique: true });
@@ -42,9 +42,9 @@ async function connect() {
   await col.feedback.createIndex({ studentId: 1 });
   // MongoDB deletes expired codes and sessions by itself
   await col.loginCodes.createIndex({ expiresAt: 1 }, { expireAfterSeconds: 0 });
-  await col.adminCodes.createIndex({ expiresAt: 1 }, { expireAfterSeconds: 0 });
   await col.oauthStates.createIndex({ expiresAt: 1 }, { expireAfterSeconds: 0 });
   await col.loginEvents.createIndex({ createdAt: -1 });
+  await col.loginEvents.createIndex({ ip: 1, createdAt: -1 });
   await col.loginEvents.createIndex({ expiresAt: 1 }, { expireAfterSeconds: 0 });
   await col.sessions.createIndex({ expiresAt: 1 }, { expireAfterSeconds: 0 });
 

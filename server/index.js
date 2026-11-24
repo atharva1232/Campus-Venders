@@ -1,17 +1,18 @@
 /* Campus Vendors: website + API. Students use email OTP. New shops require admin approval.
    Three student cancellations/confirmed no-shows suspend ordering; warnings 1 and 2 add
-   a configurable percentage to the next successful pickup order. */
+   fixed 5% and 10% fees to the next pickup order. */
 const crypto = require("crypto");
 const path = require("path");
 const express = require("express");
 const cors = require("cors");
 const DB = require("./db");
-const { sendCode, sendMerchantApplication } = require("./mail");
+const { sendCode, sendMerchantApplication, sendMerchantDecision, sendAccountBanNotice, sendSecurityAlert } = require("./mail");
 
 const PORT = Number(process.env.PORT) || 10000;
 const ORIGINS = (process.env.ALLOWED_ORIGINS || "http://localhost:8000").split(",").map((s) => s.trim()).filter(Boolean);
 const CODE_TTL_MIN = 10;
 const SESSION_DAYS = 30;
+const WARNING_FEE_PERCENT = { 1: 5, 2: 10 };
 // Local only (never on Render): with no Brevo key, the code is shown in the response so you can test.
 const DEV = !process.env.RENDER && !process.env.BREVO_API_KEY;
 
@@ -27,6 +28,7 @@ const sha = (s) => crypto.createHash("sha256").update(String(s)).digest("hex");
 const newToken = () => crypto.randomBytes(32).toString("base64url");
 const newId = (p) => p + Date.now().toString(36) + crypto.randomBytes(4).toString("hex");
 const GMAIL = /^[a-z0-9](?:[a-z0-9.+_-]*[a-z0-9])?@(gmail|googlemail)\.com$/i;
+const ADMIN_EMAIL = canonicalGmail(process.env.ADMIN_EMAIL || "");
 const PHONE = /^[6-9]\d{9}$/;
 const cleanPhone = (p) => String(p || "").replace(/\D/g, "").replace(/^(91|0)(?=[6-9]\d{9}$)/, "");
 /* a.b.c+x@gmail.com and abc@gmail.com are the same inbox */
@@ -36,6 +38,7 @@ function canonicalGmail(e) {
   return local.split("+")[0].replace(/\./g, "") + "@gmail.com";
 }
 const str = (v, max) => String(v == null ? "" : v).trim().slice(0, max);
+const escapeHtml = (value) => String(value || "").replace(/[&<>\"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 const fail = (res, status, error, extra) => res.status(status).json({ error, ...(extra || {}) });
 const wrap = (fn) => (req, res) => fn(req, res).catch((e) => { console.error(e); fail(res, 500, "Something went wrong on the server. Please try again."); });
 const days = (n) => new Date(Date.now() + n * 864e5);
@@ -53,7 +56,7 @@ async function sessionSubject(token, kind) {
 }
 const bearer = (req) => { const h = req.get("authorization") || ""; return h.startsWith("Bearer ") ? h.slice(7) : null; };
 
-const studentOut = (s) => ({ id: s._id, email: s.email, name: s.name, cls: s.cls, phone: s.phone, strikes: s.strikes || 0, blocked: !!s.blocked, warningFeePercent: Number(s.warningFeePercent) || 0, feePending: !!s.feePending, feeOrderId: s.feeOrderId || null });
+const studentOut = (s) => ({ id: s._id, email: s.email, name: s.name, cls: s.cls, phone: s.phone, strikes: s.strikes || 0, blocked: !!s.blocked, warningFeePercent: s.feePending ? WARNING_FEE_PERCENT[s.strikes] || 0 : 0, feePending: !!s.feePending, feeOrderId: s.feeOrderId || null });
 async function loadStudent(req) {
   const id = await sessionSubject(bearer(req), "student");
   return id ? C.students.findOne({ _id: id }) : null;
@@ -79,16 +82,35 @@ const noShowsOf = async (studentId) => (await C.noShows.find({ studentId }).sort
   .map((n) => ({ order_id: n._id, token: n.token, shop: n.shop, at: n.at, reason: n.reason || "not_collected" }));
 async function warningFeeFor(student) {
   if (!student.feePending || student.feeOrderId || student.strikes < 1 || student.strikes >= 3) return 0;
-  if (student.warningFeePercent !== undefined && student.warningFeePercent !== null) return Math.max(0, Math.min(50, Number(student.warningFeePercent) || 0));
-  const settings = await C.adminSettings.findOne({ _id: "order-warnings" });
-  return Number(student.strikes === 1 ? settings?.warning1Percent ?? 5 : settings?.warning2Percent ?? 10) || 0;
+  return WARNING_FEE_PERCENT[student.strikes] || 0;
 }
 async function recordStudentLogin(req, student, method) {
   const ip = String(req.ip || req.socket?.remoteAddress || "unknown").slice(0, 80);
+  const recent = await C.loginEvents.find({ ip, email: { $ne: student.email }, createdAt: { $gt: days(-90) } }).sort({ createdAt: -1 }).limit(30).toArray();
+  let related = null;
+  for (const event of recent) {
+    if (await C.blockedEmails.findOne({ _id: event.email })) { related = event; break; }
+  }
+  if (related) {
+    const reason = `This sign-in IP matches a recently suspended account (${related.email})`;
+    await C.students.updateOne({ _id: student._id }, { $set: { blocked: true } });
+    await C.blockedEmails.updateOne({ _id: student.email }, { $setOnInsert: { reason, at: new Date() } }, { upsert: true });
+    await C.loginEvents.insertOne({ email: student.email, studentId: student._id, ip, method, userAgent: str(req.get("user-agent"), 200), blocked: true, reason, createdAt: new Date(), expiresAt: days(90) });
+    try { await sendAccountBanNotice(student.email, student.name, reason); } catch (e) { console.error("Account suspension email failed:", e.message); }
+    if (GMAIL.test(ADMIN_EMAIL)) {
+      try { await sendSecurityAlert(ADMIN_EMAIL, student, ip, related.email, reason); } catch (e) { console.error("Security alert email failed:", e.message); }
+    }
+    return { blocked: true, reason };
+  }
   await C.loginEvents.insertOne({
     email: student.email, studentId: student._id, ip, method,
     userAgent: str(req.get("user-agent"), 200), createdAt: new Date(), expiresAt: days(90),
   });
+  return { blocked: false };
+}
+async function notifyStudentSuspension(student, reason) {
+  try { await sendAccountBanNotice(student.email, student.name, reason); }
+  catch (e) { console.error("Account suspension email failed:", e.message); }
 }
 
 /* ---------- the website (only its own files are public) ---------- */
@@ -99,80 +121,44 @@ app.use("/js", express.static(path.join(ROOT, "js"), noCache));
 app.get(["/", "/index.html"], (req, res) => { res.set("Cache-Control", "no-cache"); res.sendFile(path.join(ROOT, "index.html")); });
 app.get("/api/health", (req, res) => res.json({ ok: true, service: "campus-vendors", db: DB.kind, email: process.env.BREVO_API_KEY ? "brevo" : "not set" }));
 
-/* ---------- admin access and shop approvals ---------- */
-const ADMIN_EMAIL = canonicalGmail(process.env.ADMIN_EMAIL || "");
-const adminConfigured = (res) => {
-  if (!GMAIL.test(ADMIN_EMAIL)) { fail(res, 503, "Set ADMIN_EMAIL to the admin's Gmail address on the server."); return false; }
-  return true;
-};
-async function needAdmin(req, res) {
-  if (!adminConfigured(res)) return null;
-  const email = await sessionSubject(bearer(req), "admin");
-  if (email !== ADMIN_EMAIL) { fail(res, 401, "Admin sign-in required."); return null; }
-  return email;
-}
-app.post("/api/admin/send-code", wrap(async (req, res) => {
-  if (!adminConfigured(res)) return;
-  if (canonicalGmail(str(req.body.email, 120)) !== ADMIN_EMAIL) return fail(res, 403, "Use the configured admin Gmail address.");
-  const prev = await C.adminCodes.findOne({ _id: ADMIN_EMAIL });
-  if (prev && Date.now() - prev.sentAt.getTime() < 60000) return fail(res, 429, "Please wait a minute before requesting another code.");
-  const code = String(crypto.randomInt(0, 1000000)).padStart(6, "0");
-  await C.adminCodes.updateOne({ _id: ADMIN_EMAIL }, { $set: { codeHash: sha(ADMIN_EMAIL + ":" + code), attempts: 0, sentAt: new Date(), expiresAt: new Date(Date.now() + CODE_TTL_MIN * 60000) } }, { upsert: true });
-  try { await sendCode(ADMIN_EMAIL, code); } catch (e) { return fail(res, 502, "We couldn't email the admin code. Check email service settings."); }
-  res.json({ ok: true, ...(DEV ? { devCode: code } : {}) });
+/* ---------- email-only merchant approvals ---------- */
+app.get("/api/vendor-applications/:id/decision", wrap(async (req, res) => {
+  const action = req.query.action === "approve" ? "approved" : req.query.action === "reject" ? "rejected" : null;
+  const token = str(req.query.token, 200);
+  if (!action || !token) return res.status(400).send("Invalid shop decision link.");
+  const filter = { _id: str(req.params.id, 80), status: "pending", reviewTokenHash: sha(token), reviewExpiresAt: { $gt: new Date() } };
+  const appRow = await C.vendorApplications.findOne(filter);
+  if (!appRow) return res.status(410).send("This one-time approval link has expired or was already used.");
+  const label = action === "approved" ? "Approve shop" : "Reject application";
+  const id = escapeHtml(req.params.id);
+  res.type("html").send(`<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${label} · Campus Vendors</title><body style="margin:0;background:#f5f0e6;color:#16302a;font:16px/1.5 Arial,sans-serif"><main style="max-width:560px;margin:10vh auto;padding:28px;background:#fffdf8;border:1px solid #e2dacb;border-radius:18px"><p style="color:#e2672b;text-transform:uppercase;letter-spacing:.12em;font-size:12px">Campus Vendors · Shop request</p><h1>${label}?</h1><p><b>${escapeHtml(appRow.data.name)}</b> · ${escapeHtml(appRow.data.category)}</p><p>${escapeHtml(appRow.data.location)} · ${escapeHtml(appRow.data.phone)} · ${escapeHtml(appRow.data.ownerEmail)}</p><form method="post" action="/api/vendor-applications/${id}/decision"><input type="hidden" name="token" value="${escapeHtml(token)}"><input type="hidden" name="action" value="${action}"><button style="border:0;border-radius:9px;padding:12px 18px;background:${action === "approved" ? "#1d8a4e" : "#b8432f"};color:white;font-weight:bold;cursor:pointer">Confirm ${label.toLowerCase()}</button></form></main></body></html>`);
 }));
-app.post("/api/admin/verify", wrap(async (req, res) => {
-  if (!adminConfigured(res)) return;
-  const c = await C.adminCodes.findOne({ _id: ADMIN_EMAIL });
-  const code = str(req.body.code, 10).replace(/\D/g, "");
-  if (!c || c.expiresAt < new Date()) return fail(res, 400, "That code expired. Request a new one.");
-  if (c.attempts >= 5) return fail(res, 429, "Too many wrong tries. Request a new code.");
-  if (c.codeHash !== sha(ADMIN_EMAIL + ":" + code)) { await C.adminCodes.updateOne({ _id: ADMIN_EMAIL }, { $inc: { attempts: 1 } }); return fail(res, 400, "That code is incorrect."); }
-  await C.adminCodes.deleteOne({ _id: ADMIN_EMAIL });
-  res.json({ token: await newSession("admin", ADMIN_EMAIL), email: ADMIN_EMAIL });
-}));
-app.get("/api/admin/applications", wrap(async (req, res) => {
-  if (!await needAdmin(req, res)) return;
-  const applications = await C.vendorApplications.find({ status: "pending" }).sort({ createdAt: 1 }).toArray();
-  res.json({ applications: applications.map((a) => ({ ...a.data, vendorId: a.data.id, id: a._id, submittedAt: a.createdAt })) });
-}));
-app.patch("/api/admin/applications/:id", wrap(async (req, res) => {
-  if (!await needAdmin(req, res)) return;
-  const action = req.body.action === "approve" ? "approved" : req.body.action === "reject" ? "rejected" : null;
-  if (!action) return fail(res, 400, "Choose approve or reject.");
-  const a = await C.vendorApplications.findOne({ _id: req.params.id, status: "pending" });
-  if (!a) return fail(res, 404, "This application is no longer pending.");
+app.post("/api/vendor-applications/:id/decision", express.urlencoded({ extended: false }), wrap(async (req, res) => {
+  const action = req.body.action === "approved" ? "approved" : req.body.action === "rejected" ? "rejected" : null;
+  const token = str(req.body.token, 200);
+  if (!action || !token) return res.status(400).send("Invalid shop decision link.");
+  const filter = { _id: str(req.params.id, 80), status: "pending", reviewTokenHash: sha(token), reviewExpiresAt: { $gt: new Date() } };
+  const appRow = await C.vendorApplications.findOne(filter);
+  if (!appRow) return res.status(410).send("This one-time approval link has expired or was already used.");
+  const claimed = await C.vendorApplications.updateOne(filter, { $set: { status: "processing", reviewAction: action } });
+  if (!claimed.modifiedCount) return res.status(410).send("This one-time approval link has expired or was already used.");
+  let message = action === "approved" ? "Shop approved" : "Shop application rejected";
+  let status = action;
   if (action === "approved") {
-    const d = a.data;
-    try { await C.vendors.insertOne({ _id: d.id, nameKey: DB.nameKey(d.name), pincode: d.pincode, phone: d.phone, ownerEmail: d.ownerEmail, data: d, createdAt: new Date() }); }
-    catch (e) { if (e.code === 11000) return fail(res, 409, "A shop with this name is already listed."); throw e; }
+    const d = appRow.data;
+    try {
+      await C.vendors.insertOne({ _id: d.id, nameKey: DB.nameKey(d.name), pincode: d.pincode, phone: d.phone, ownerEmail: d.ownerEmail, data: d, createdAt: new Date() });
+    } catch (e) {
+      status = "rejected";
+      message = e.code === 11000 ? "A shop with this name is already listed" : "The shop could not be approved";
+      console.error("Shop approval failed:", e.message);
+    }
   }
-  await C.vendorApplications.updateOne({ _id: a._id, status: "pending" }, { $set: { status: action, reviewedAt: new Date(), reviewedBy: ADMIN_EMAIL } });
-  res.json({ ok: true, status: action, name: a.data.name });
-}));
-app.get("/api/admin/settings", wrap(async (req, res) => {
-  if (!await needAdmin(req, res)) return;
-  let settings = await C.adminSettings.findOne({ _id: "order-warnings" });
-  if (!settings) settings = { _id: "order-warnings", warning1Percent: 5, warning2Percent: 10 };
-  res.json({ settings: { warning1Percent: settings.warning1Percent, warning2Percent: settings.warning2Percent } });
-}));
-app.put("/api/admin/settings", wrap(async (req, res) => {
-  if (!await needAdmin(req, res)) return;
-  const warning1Percent = Math.max(0, Math.min(50, Number(req.body.warning1Percent) || 0));
-  const warning2Percent = Math.max(0, Math.min(50, Number(req.body.warning2Percent) || 0));
-  await C.adminSettings.updateOne({ _id: "order-warnings" }, { $set: { warning1Percent, warning2Percent, updatedAt: new Date() } }, { upsert: true });
-  res.json({ settings: { warning1Percent, warning2Percent } });
-}));
-app.get("/api/admin/security-events", wrap(async (req, res) => {
-  if (!await needAdmin(req, res)) return;
-  const events = await C.loginEvents.find({}).sort({ createdAt: -1 }).limit(100).toArray();
-  const emailsByIp = new Map();
-  events.forEach((e) => emailsByIp.set(e.ip, (emailsByIp.get(e.ip) || new Set()).add(e.email)));
-  res.json({ events: events.map((e) => ({ email: e.email, ip: e.ip, method: e.method, userAgent: e.userAgent, at: e.createdAt, sharedAccounts: emailsByIp.get(e.ip)?.size || 1 })) });
-}));
-app.get("/api/admin/logout", wrap(async (req, res) => {
-  const token = bearer(req); if (token) await C.sessions.deleteOne({ _id: sha(token) });
-  res.json({ ok: true });
+  await C.vendorApplications.updateOne({ _id: appRow._id, status: "processing" }, { $set: { status, reviewedAt: new Date() }, $unset: { reviewTokenHash: "", reviewExpiresAt: "" } });
+  try { await sendMerchantDecision(appRow.data.ownerEmail, appRow.data.name, status); } catch (e) { console.error("Merchant decision email failed:", e.message); }
+  const pageTitle = escapeHtml(message);
+  const shopName = escapeHtml(appRow.data.name);
+  res.type("html").send(`<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${pageTitle} · Campus Vendors</title><body style="margin:0;background:#f5f0e6;color:#16302a;font:16px/1.5 Arial,sans-serif"><main style="max-width:560px;margin:10vh auto;padding:28px;background:#fffdf8;border:1px solid #e2dacb;border-radius:18px"><p style="color:#e2672b;text-transform:uppercase;letter-spacing:.12em;font-size:12px">Campus Vendors · Shop application</p><h1>${pageTitle}</h1><p>${shopName}</p><p>${status === "approved" ? "The shop is now available in the directory." : "The application has been closed. The merchant was notified by email."}</p></main></body></html>`);
 }));
 
 /* ---------- student sign-up / sign-in ---------- */
@@ -229,7 +215,8 @@ app.post("/api/auth/verify", wrap(async (req, res) => {
     await C.students.updateOne({ _id: s._id }, { $set: { name: d.name, cls: d.cls, phone: d.phone } });
     s = { ...s, name: d.name, cls: d.cls, phone: d.phone };
   }
-  await recordStudentLogin(req, s, "email_otp");
+  const security = await recordStudentLogin(req, s, "email_otp");
+  if (security.blocked) return fail(res, 403, security.reason, { blocked: true });
   res.json({ token: await newSession("student", s._id), student: studentOut(s) });
 }));
 
@@ -245,7 +232,8 @@ app.post("/api/auth/finish", wrap(async (req, res) => {
     { upsert: true });
   const s = await C.students.findOne({ email });
   await C.sessions.deleteOne({ _id: sha(req.body.pendingToken) });
-  await recordStudentLogin(req, s, "verified_email");
+  const security = await recordStudentLogin(req, s, "verified_email");
+  if (security.blocked) return fail(res, 403, security.reason, { blocked: true });
   res.json({ token: await newSession("student", s._id), student: studentOut(s) });
 }));
 
@@ -278,12 +266,15 @@ app.get("/api/auth/google/callback", wrap(async (req, res) => {
   if (await isBlocked(email)) return res.redirect("/?google_error=blocked#/login");
   let s = await C.students.findOne({ email });
   if (s && s.phone && s.cls) {
-    await recordStudentLogin(req, s, "google");
+    const security = await recordStudentLogin(req, s, "google");
+    if (security.blocked) return res.redirect("/?google_error=ip_block#/login");
     return res.redirect(`/?google_token=${encodeURIComponent(await newSession("student", s._id))}#/`);
   }
   if (s) await C.students.updateOne({ _id: s._id }, { $set: { name: s.name || str(profile.name, 40) } });
   else await C.students.insertOne({ _id: newId("s"), email, name: str(profile.name, 40) || email.split("@")[0], cls: "", phone: "", strikes: 0, blocked: false, createdAt: new Date() });
   s = await C.students.findOne({ email });
+  const security = await recordStudentLogin(req, s, "google");
+  if (security.blocked) return res.redirect("/?google_error=ip_block#/login");
   const pendingToken = await newSession("pending-google", email, 1);
   res.redirect(`/?google_pending=${encodeURIComponent(pendingToken)}&google_email=${encodeURIComponent(email)}#/login`);
 }));
@@ -393,7 +384,11 @@ app.put("/api/orders/:id/cancel", wrap(async (req, res) => {
   const shop = await C.vendors.findOne({ _id: o.vendorId });
   await C.noShows.updateOne({ _id: o._id }, { $setOnInsert: { studentId: s._id, token: o.data.token, shop: shop?.data?.name || "Shop", at: new Date(), reason: "cancelled" } }, { upsert: true });
   await C.students.updateOne({ _id: s._id }, { $set: { strikes: strike, blocked, feePending: !blocked, feeOrderId: null, warningFeePercent: feePercent } });
-  if (blocked) await C.blockedEmails.updateOne({ _id: s.email }, { $setOnInsert: { reason: "Cancelled orders three times", at: new Date() } }, { upsert: true });
+  if (blocked) {
+    const reason = "Three order cancellations or missed pickups";
+    await C.blockedEmails.updateOne({ _id: s.email }, { $setOnInsert: { reason, at: new Date() } }, { upsert: true });
+    await notifyStudentSuspension(s, reason);
+  }
   res.json({ ok: true, strike: { strikes: strike, blocked, feePercent } });
 }));
 
@@ -462,12 +457,14 @@ app.post("/api/vendors", wrap(async (req, res) => {
     ...(p ? { print: { bw: Number(p.bw) || 0, color: Number(p.color) || 0, doubleSidedDiscount: 0.2, binding: Number(p.binding) || 0 } } : {}),
   };
   const applicationId = newId("va");
-  await C.vendorApplications.insertOne({ _id: applicationId, status: "pending", data: { ...data, nameKey: DB.nameKey(name) }, createdAt: new Date() });
+  const reviewToken = newToken();
+  await C.vendorApplications.insertOne({ _id: applicationId, status: "pending", reviewTokenHash: sha(reviewToken), reviewExpiresAt: days(7), data: { ...data, nameKey: DB.nameKey(name) }, createdAt: new Date() });
   let emailSent = false;
   try {
     if (!GMAIL.test(ADMIN_EMAIL)) throw new Error("admin_email_not_configured");
     const baseUrl = String(process.env.PUBLIC_URL || process.env.RENDER_EXTERNAL_URL || "https://campus-vendors.onrender.com").replace(/\/$/, "");
-    await sendMerchantApplication(ADMIN_EMAIL, data, `${baseUrl}/#/admin`);
+    const decisionUrl = (action) => `${baseUrl}/api/vendor-applications/${encodeURIComponent(applicationId)}/decision?token=${encodeURIComponent(reviewToken)}&action=${action}`;
+    await sendMerchantApplication(ADMIN_EMAIL, data, decisionUrl("approve"), decisionUrl("reject"));
     emailSent = true;
   } catch (e) { console.error("Admin application email failed:", e.message); }
   res.status(202).json({ ok: true, pending: true, applicationId, emailSent, message: emailSent ? "Application sent to the admin for approval." : "Application saved. Admin email notification could not be sent; check server email settings." });
@@ -512,7 +509,11 @@ app.put("/api/vendor/orders/:id", wrap(async (req, res) => {
     const s = await C.students.findOne({ _id: o.studentId });
     // the student's session stays so their next refresh can show "Account blocked";
     // every student action already refuses blocked accounts
-    if (s.blocked) await C.blockedEmails.updateOne({ _id: s.email }, { $setOnInsert: { reason: "Cancelled or failed to collect orders three times", at: new Date() } }, { upsert: true });
+    if (s.blocked) {
+      const reason = "Three order cancellations or missed pickups";
+      await C.blockedEmails.updateOne({ _id: s.email }, { $setOnInsert: { reason, at: new Date() } }, { upsert: true });
+      await notifyStudentSuspension(s, reason);
+    }
     strike = { strikes: s.strikes, blocked: s.blocked, feePercent: warningFeePercent, name: s.name };
   }
   if (status === "collected" && o.data.warningFee) await C.students.updateOne({ _id: o.studentId, feeOrderId: o._id }, { $set: { feePending: false, feeOrderId: null, warningFeePercent: 0 } });
