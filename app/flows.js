@@ -79,7 +79,7 @@ export function Account({
         <Panel description={pending ? undefined : codeSent ? `Enter the six-digit code sent to ${email.trim()}.` : 'Use your Gmail address to receive a one-time sign-in code.'}>
           {needsProfile && (pending || !codeSent) && (
             <>
-              {!pending && <Field label="Full name" value={name} onChangeText={setName} autoComplete="name" />}
+              <Field label="Full name" value={name} onChangeText={setName} autoComplete="name" />
               <Field label="Class or department" value={cls} onChangeText={setCls} />
               <Field label="Mobile number" placeholder="10-digit mobile number" value={phone} onChangeText={setPhone} keyboardType="phone-pad" autoComplete="tel" />
             </>

@@ -47,7 +47,44 @@ function ServiceCard({ title, description, icon, tint, onPress }) {
   );
 }
 
-export function Home({ me, signedIn, orders, shops, browse, goOrders, goMerchant, goEmail, goGoogle, googleNotice, busy }) {
+export function Welcome({ goEmail, goGoogle, goMerchant, googleNotice, sessionNotice, busy }) {
+  return (
+    <ScrollView style={S.scroll} contentContainerStyle={styles.content}>
+      <View style={styles.welcomeHero}>
+        <Image source={heroImage} resizeMode="cover" style={styles.welcomeImage} />
+        <View style={styles.welcomeCopy}>
+          <Text accessibilityRole="header" style={S.heroTitle}>Your campus, within reach.</Text>
+          <Text style={S.heroBody}>Find food, printing, and shops around RVCE.</Text>
+        </View>
+      </View>
+
+      <View style={styles.welcomeServices}>
+        {Object.values(services).map(({ title, icon, tint }) => (
+          <View key={title} style={styles.welcomeService}>
+            <View style={[styles.iconTile, { backgroundColor: tint }]}>
+              <Icon name={icon} color={colors.forest} size={20} />
+            </View>
+            <Text style={[S.label, S.center]}>{title}</Text>
+          </View>
+        ))}
+      </View>
+
+      <Panel title="Get started" description="Sign in to explore shops, place an order, or send a print job.">
+        {sessionNotice ? <Text accessibilityRole="alert" style={S.body}>{sessionNotice}</Text> : null}
+        <Action label="Continue with Google" icon="logo-google" tone="secondary" onPress={goGoogle} disabled={busy} />
+        {googleNotice ? <Text accessibilityRole="alert" style={S.body}>{googleNotice}</Text> : null}
+        <Action label="Continue with email" icon="mail-outline" onPress={goEmail} disabled={busy} />
+      </Panel>
+
+      <Pressable accessibilityRole="button" onPress={goMerchant} style={({ pressed }) => [styles.merchantLink, pressed && styles.pressed]}>
+        <Text style={styles.textButtonLabel}>For merchants</Text>
+        <Icon name="chevron-forward" size={17} color={colors.orangeDark} />
+      </Pressable>
+    </ScrollView>
+  );
+}
+
+export function Home({ me, orders, shops, browse, goOrders }) {
   const firstName = me?.name?.trim().split(/\s+/)[0];
   const nextPickup = orders.find(order => order.status === 'ready')
     || orders.find(order => ['placed', 'accepted'].includes(order.status));
@@ -55,13 +92,9 @@ export function Home({ me, signedIn, orders, shops, browse, goOrders, goMerchant
 
   return (
     <ScrollView style={S.scroll} contentContainerStyle={styles.content}>
-      <View style={S.hero}>
-        <Image source={heroImage} resizeMode="cover" style={S.heroImage} />
-        <View style={S.heroCopy}>
-          {firstName && <Text style={styles.greeting}>Hi, {firstName}</Text>}
-          <Text accessibilityRole="header" style={S.heroTitle}>Your campus, within reach.</Text>
-          <Text style={S.heroBody}>Find food, printing, and shops around RVCE.</Text>
-        </View>
+      <View style={[S.panel, styles.dashboardIntro]}>
+        <Text accessibilityRole="header" style={S.pageTitle}>{firstName ? `Hi, ${firstName}` : 'Campus home'}</Text>
+        <Text style={S.body}>What do you need on campus today?</Text>
       </View>
 
       <View style={styles.serviceSection}>
@@ -82,13 +115,7 @@ export function Home({ me, signedIn, orders, shops, browse, goOrders, goMerchant
         </View>
       </View>
 
-      {!signedIn ? (
-        <Panel title="Sign in to place orders" description="Order food, send a print job, and check when it’s ready.">
-          <Action label="Continue with Google" icon="logo-google" tone="secondary" onPress={goGoogle} disabled={busy} />
-          {googleNotice ? <Text accessibilityRole="alert" style={S.body}>{googleNotice}</Text> : null}
-          <Action label="Sign in with email" icon="mail-outline" onPress={goEmail} disabled={busy} />
-        </Panel>
-      ) : nextPickup ? (
+      {nextPickup && (
         <Panel title="Your next pickup">
           <View style={S.titleRow}>
             <Text style={S.shopName}>{pickupShop?.name || 'Campus order'}</Text>
@@ -97,25 +124,20 @@ export function Home({ me, signedIn, orders, shops, browse, goOrders, goMerchant
           <Text style={S.body}>Pickup token {nextPickup.token}</Text>
           <Action label="View orders" icon="receipt-outline" tone="secondary" onPress={goOrders} />
         </Panel>
-      ) : null}
-
-      <Pressable accessibilityRole="button" onPress={goMerchant} style={({ pressed }) => [S.directoryCard, pressed && styles.pressed]}>
-        <View style={[styles.iconTile, { backgroundColor: colors.sage }]}>
-          <Icon name="business-outline" size={21} color={colors.forest} />
-        </View>
-        <View style={S.details}>
-          <Text style={S.shopName}>For merchants</Text>
-          <Text style={S.caption}>Register your shop or manage orders</Text>
-        </View>
-        <Icon name="chevron-forward" size={17} color={colors.muted} />
-      </Pressable>
+      )}
     </ScrollView>
   );
 }
 
 const styles = StyleSheet.create({
   content: { paddingHorizontal: 18, paddingTop: 8, paddingBottom: 24, gap: 14 },
-  greeting: { color: '#efd1aa', fontSize: 13, fontWeight: '800' },
+  welcomeHero: { borderRadius: 22, overflow: 'hidden', backgroundColor: colors.forest },
+  welcomeImage: { width: '100%', height: 168 },
+  welcomeCopy: { paddingHorizontal: 18, paddingVertical: 16, gap: 7 },
+  welcomeServices: { flexDirection: 'row', justifyContent: 'space-around', gap: 8, paddingVertical: 6 },
+  welcomeService: { flex: 1, alignItems: 'center', gap: 3 },
+  merchantLink: { flexDirection: 'row', justifyContent: 'center', alignItems: 'center', gap: 4, minHeight: 44 },
+  dashboardIntro: { backgroundColor: colors.sage, paddingVertical: 20, gap: 6 },
   serviceSection: { gap: 8 },
   gridRow: { flexDirection: 'row', gap: 8 },
   serviceCard: {

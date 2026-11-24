@@ -1,10 +1,10 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
-import { Alert, KeyboardAvoidingView, Platform, Pressable, Text, View } from 'react-native';
+import { ActivityIndicator, Alert, BackHandler, KeyboardAvoidingView, Platform, Pressable, Text, View } from 'react-native';
 import { SafeAreaProvider, SafeAreaView } from 'react-native-safe-area-context';
 import { isRunningInExpoGo } from 'expo';
 import { Explore, ShopDetails } from './directory';
 import { Account, Merchant, Orders } from './flows';
-import { Home, services } from './home';
+import { Home, Welcome, services } from './home';
 import { Icon, colors, styles as S } from './ui';
 import * as SecureStore from 'expo-secure-store';
 import * as DocumentPicker from 'expo-document-picker';
@@ -42,12 +42,15 @@ export default function App() {
 function CampusVendors() {
   const [token,setToken]=useState(null), [me,setMe]=useState(null), [shops,setShops]=useState([]), [orders,setOrders]=useState([]), [cart,setCart]=useState([]);
   const [tab, setTab] = useState('Home');
+  const [guestPage, setGuestPage] = useState('Welcome');
+  const [restoringSession, setRestoringSession] = useState(true);
+  const [sessionNotice, setSessionNotice] = useState('');
   const [service, setService] = useState(null);
   const [googleNotice, setGoogleNotice] = useState('');
   const [busy,setBusy]=useState(false), [error,setError]=useState(''), [authView,setAuthView]=useState('login'), [codeSent,setCodeSent]=useState(false), [devCode,setDevCode]=useState(''), [pending,setPending]=useState('');
   const [email,setEmail]=useState(''), [code,setCode]=useState(''), [name,setName]=useState(''), [cls,setCls]=useState(''), [phone,setPhone]=useState(''), [query,setQuery]=useState(''), [category,setCategory]=useState('All'), [selected,setSelected]=useState(null), [vendorToken,setVendorToken]=useState(null), [vendor,setVendor]=useState(null), [vendorOrders,setVendorOrders]=useState([]);
   const [form,setForm]=useState({}), [itemName,setItemName]=useState(''), [itemPrice,setItemPrice]=useState(''), [shopNote,setShopNote]=useState(null), [printFile,setPrintFile]=useState(null), [printPages,setPrintPages]=useState('1'), [printCopies,setPrintCopies]=useState('1'), [feedbackMessage,setFeedbackMessage]=useState('');
-  const [loadingDirectory, setLoadingDirectory] = useState(true);
+  const [loadingDirectory, setLoadingDirectory] = useState(false);
   const [directoryError, setDirectoryError] = useState('');
   const googleEnabled = !!Platform.select({
     android: process.env.EXPO_PUBLIC_GOOGLE_ANDROID_CLIENT_ID,
@@ -76,14 +79,15 @@ function CampusVendors() {
       setVendor(nextShops.find(shop => shop.id === data.vendorId) || { id: data.vendorId });
       setVendorOrders(normalize(data.vendorOrders));
     }
+    return data;
   }, [request]);
 
   const refresh = (studentToken = token) => sync(studentToken, vendorToken);
-  async function refreshDirectory() {
+  async function refreshDirectory(studentToken = token) {
     setLoadingDirectory(true);
     setDirectoryError('');
     try {
-      await refresh();
+      await refresh(studentToken);
     } catch (err) {
       setDirectoryError(err.message);
     } finally {
@@ -98,13 +102,25 @@ function CampusVendors() {
           storage.get('student-token'),
           storage.get('vendor-token'),
         ]);
-        setToken(savedStudent);
-        setVendorToken(savedMerchant);
-        await sync(savedStudent, savedMerchant);
+        if (!savedStudent && !savedMerchant) return;
+
+        const data = await sync(savedStudent, savedMerchant);
+        if (savedStudent && data.me) {
+          setToken(savedStudent);
+        } else if (savedStudent) {
+          await storage.remove('student-token');
+          setSessionNotice(data.blocked ? 'Your student account is blocked.' : 'Your session expired. Sign in again to continue.');
+        }
+        if (savedMerchant && data.vendorId) {
+          setVendorToken(savedMerchant);
+          if (!data.me) setGuestPage('Shop');
+        } else if (savedMerchant) {
+          await storage.remove('vendor-token');
+        }
       } catch (err) {
-        setDirectoryError(err.message);
+        setSessionNotice('Couldn’t restore your session. Check your connection and sign in again.');
       } finally {
-        setLoadingDirectory(false);
+        setRestoringSession(false);
       }
     }
     load();
@@ -146,8 +162,41 @@ function CampusVendors() {
   async function verifyCode(){try{setBusy(true);const d=await request('/api/mobile/auth/verify','POST',{email:email.trim().toLowerCase(),code},null);if(d.needsProfile){setPending(d.pendingToken);setError('Add your name, class and mobile number to finish creating your account.');return}await finishLogin(d.token,d.student)}catch(e){setError(e.message)}finally{setBusy(false)}}
   async function finishProfile(){try{setBusy(true);const d=await request('/api/mobile/auth/finish','POST',{pendingToken:pending,name,cls,phone},null);await finishLogin(d.token,d.student)}catch(e){setError(e.message)}finally{setBusy(false)}}
   async function completeGoogle(idToken){try{setBusy(true);const d=await request('/api/mobile/auth/google','POST',{idToken},null);if(d.needsProfile){setPending(d.pendingToken);setEmail(d.email);setError('Finish your profile to continue.');return}await finishLogin(d.token,d.student)}catch(e){setError(e.message)}finally{setBusy(false)}}
-  async function finishLogin(t,student){await storage.set('student-token',t);setToken(t);setMe(student);setAuthView('login');setCodeSent(false);setPending('');setError('');await refresh(t)}
-  async function logout(){try{await request('/api/auth/logout','POST',{},token)}catch{}await storage.remove('student-token');setToken(null);setMe(null);setOrders([]);goTo('Home')}
+  async function finishLogin(studentToken, student) {
+    await storage.set('student-token', studentToken);
+    setMe(student);
+    setSessionNotice('');
+    setAuthView('login');
+    setPending('');
+    editEmail();
+    goTo('Home');
+    setGuestPage('Welcome');
+    setToken(studentToken);
+    await refreshDirectory(studentToken);
+  }
+
+  async function logout() {
+    try {
+      await request('/api/auth/logout', 'POST', {}, token);
+    } catch {
+      // Clear the local session even when the server is unreachable.
+    }
+    await storage.remove('student-token');
+    setToken(null);
+    setMe(null);
+    setOrders([]);
+    setCart([]);
+    setFeedbackMessage('');
+    setEmail('');
+    setName('');
+    setCls('');
+    setPhone('');
+    setPrintFile(null);
+    clearService();
+    setQuery('');
+    goTo('Home');
+    setGuestPage('Welcome');
+  }
   async function placeOrder(){if(!token){goTo('Account');setError('Sign in with your email code to place an order.');return}const items=selectedCart;try{const d=await request('/api/mobile/orders','POST',{vendorId:selected.id,items:items.map(x=>({id:x.id,qty:x.qty})),pickup:'ASAP',note:''});setCart(previous=>previous.filter(item=>item.vendorId!==selected.id));setSelected(null);await refresh();Alert.alert('Order placed',`Your pickup token is ${d.order.token}. Total: ${money(d.order.total)}${d.order.warningFee?` (includes ${d.order.warningFee.percent}% warning fee for the shop)`:''}`)}catch(e){Alert.alert('Could not place order',e.message)}}
   async function pickPrintFile(){try{const r=await DocumentPicker.getDocumentAsync({type:'application/pdf',copyToCacheDirectory:true});if(!r.canceled)setPrintFile(r.assets[0])}catch(e){Alert.alert('File picker unavailable',e.message)}}
   async function submitPrint(){if(!token){goTo('Account');setError('Sign in with your email code to submit a print job.');return}if(!printFile)return Alert.alert('Choose a PDF','Select the document you want printed.');try{const base64=await FileSystem.readAsStringAsync(printFile.uri,{encoding:FileSystem.EncodingType.Base64});const d=await request('/api/mobile/orders','POST',{vendorId:selected.id,type:'print',pickup:'ASAP',print:{pages:Number(printPages)||1,copies:Number(printCopies)||1,color:'bw',sides:'single',binding:'none',fileName:printFile.name,size:printFile.size||0},file:`data:application/pdf;base64,${base64}`});setPrintFile(null);setSelected(null);await refresh();Alert.alert('Print job placed',`Pickup token ${d.order.token} · ${money(d.order.total)}`)}catch(e){Alert.alert('Could not place print job',e.message)}}
@@ -159,13 +208,58 @@ function CampusVendors() {
   async function updateOrder(o,status){try{await request(`/api/mobile/vendor/orders/${o.id}`,'PUT',{status});await vendorRefresh()}catch(e){Alert.alert('Order update failed',e.message)}}
   async function rateOrder(o,stars){try{await request(`/api/orders/${o.id}/rate`,'POST',{stars,comment:''});await refresh();Alert.alert('Thanks for rating',`Your ${stars}-star rating was saved.`)}catch(e){Alert.alert('Could not rate order',e.message)}}
   async function sendFeedback(){try{await request('/api/feedback','POST',{type:'feedback',message:feedbackMessage});setFeedbackMessage('');Alert.alert('Feedback sent','Thank you for helping improve Campus Vendors.')}catch(e){Alert.alert('Could not send feedback',e.message)}}
-  async function applyShop(){try{setBusy(true);const d=await request('/api/mobile/vendor-applications','POST',form,null,null);Alert.alert('Application received',d.reviewEmailSent?'The review email was sent. Your shop will appear after approval.':`Saved, but the review email could not be sent. Ask the app operator to check ADMIN_EMAIL and Brevo settings. ${d.ownerEmailSent?'A receipt was emailed to the owner.':''}`);setTab('Account')}catch(e){Alert.alert('Application failed',e.message)}finally{setBusy(false)}}
+  async function applyShop() {
+    setBusy(true);
+    try {
+      const result = await request('/api/mobile/vendor-applications', 'POST', form, null, null);
+      const message = result.reviewEmailSent
+        ? 'The review email was sent. Your shop will appear after approval.'
+        : `Saved, but the review email could not be sent. Ask the app operator to check ADMIN_EMAIL and Brevo settings. ${result.ownerEmailSent ? 'A receipt was emailed to the owner.' : ''}`;
+      Alert.alert('Application received', message);
+      setForm({});
+      if (token) goTo('Account');
+      else openGuestPage('Welcome');
+    } catch (err) {
+      Alert.alert('Application failed', err.message);
+    } finally {
+      setBusy(false);
+    }
+  }
   function goTo(nextTab) {
     setTab(nextTab);
     setSelected(null);
     setError('');
     setGoogleNotice('');
   }
+
+  function openGuestPage(page) {
+    setGuestPage(page);
+    setError('');
+    setGoogleNotice('');
+  }
+
+  const page = restoringSession ? 'Restoring' : token ? tab : guestPage;
+  const canGoBack = !!selected || (!token && (page === 'Account' || page === 'Shop'));
+
+  const goBack = useCallback(() => {
+    if (busy) return;
+    if (selected) {
+      setSelected(null);
+    } else {
+      setGuestPage('Welcome');
+      setError('');
+      setGoogleNotice('');
+    }
+  }, [selected, busy]);
+
+  useEffect(() => {
+    if (!canGoBack || Platform.OS !== 'android') return;
+    const subscription = BackHandler.addEventListener('hardwareBackPress', () => {
+      goBack();
+      return true;
+    });
+    return () => subscription.remove();
+  }, [canGoBack, goBack]);
 
   function clearService() {
     setService(null);
@@ -188,7 +282,7 @@ function CampusVendors() {
       setGoogleNotice('Google sign-in is still loading. Try again in a moment.');
       return;
     }
-    goTo('Account');
+    openGuestPage('Account');
     setAuthView('login');
     editEmail();
     try {
@@ -242,8 +336,8 @@ function CampusVendors() {
       <ExpoStatusBar style="dark" />
       <KeyboardAvoidingView style={S.frame} behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
         <View style={S.header}>
-          {selected ? (
-            <Pressable accessibilityRole="button" accessibilityLabel="Back to directory" onPress={() => setSelected(null)} style={S.back}>
+          {canGoBack ? (
+            <Pressable accessibilityRole="button" accessibilityLabel={selected ? 'Back to directory' : 'Back to welcome'} onPress={goBack} disabled={busy} style={S.back}>
               <Icon name="arrow-back" size={22} color={colors.forest} />
             </Pressable>
           ) : (
@@ -256,7 +350,14 @@ function CampusVendors() {
           </View>
         </View>
 
-        {selected ? (
+        {page === 'Restoring' ? (
+          <ActivityIndicator accessibilityLabel="Restoring session" color={colors.forest} style={S.scroll} />
+        ) : page === 'Welcome' ? (
+          <Welcome goEmail={() => openGuestPage('Account')} goGoogle={startGoogleSignIn}
+            goMerchant={() => openGuestPage('Shop')} googleNotice={googleNotice}
+            sessionNotice={sessionNotice} busy={busy}
+          />
+        ) : token && selected ? (
           <ShopDetails
             shop={selected} cart={selectedCart} changeQuantity={changeQuantity}
             warningFeePercent={me?.warningFeePercent} placeOrder={placeOrder} money={money}
@@ -264,25 +365,21 @@ function CampusVendors() {
             setPrintPages={setPrintPages} setPrintCopies={setPrintCopies}
             pickPrintFile={pickPrintFile} submitPrint={submitPrint}
           />
-        ) : tab === 'Home' ? (
-          <Home me={me} signedIn={!!token} orders={orders} shops={shops} browse={browse}
-            goOrders={() => goTo('Orders')} goMerchant={() => goTo('Shop')}
-            goEmail={() => goTo('Account')} goGoogle={startGoogleSignIn} busy={busy}
-            googleNotice={googleNotice}
-          />
-        ) : tab === 'Explore' ? (
+        ) : page === 'Home' ? (
+          <Home me={me} orders={orders} shops={shops} browse={browse} goOrders={() => goTo('Orders')} />
+        ) : page === 'Explore' ? (
           <Explore
             shops={shops} visible={visible} category={category} categories={categories}
             setCategory={setCategory} query={query} setQuery={setQuery}
-            loading={loadingDirectory} error={directoryError} refresh={refreshDirectory}
+            loading={loadingDirectory} error={directoryError} refresh={() => refreshDirectory()}
             onShopPress={openShop} serviceTitle={services[service]?.title} clearService={clearService}
           />
-        ) : tab === 'Orders' ? (
+        ) : page === 'Orders' ? (
           <Orders signedIn={!!token} orders={orders} shops={shops} money={money}
             goAccount={() => goTo('Account')} goExplore={() => browse()}
             cancel={cancelOrder} rate={rateOrder}
           />
-        ) : tab === 'Shop' ? (
+        ) : page === 'Shop' ? (
           <Merchant
             vendor={vendor} orders={vendorOrders} form={form} setForm={setForm}
             busy={busy} error={error} signIn={vendorLogin} apply={applyShop}
@@ -303,7 +400,7 @@ function CampusVendors() {
           />
         )}
 
-        <View style={S.nav}>
+        {token && <View style={S.nav}>
           {TABS.map(({ label, icon }) => {
             const active = tab === label;
             return (
@@ -315,7 +412,7 @@ function CampusVendors() {
               </Pressable>
             );
           })}
-        </View>
+        </View>}
       </KeyboardAvoidingView>
     </SafeAreaView>
   );
