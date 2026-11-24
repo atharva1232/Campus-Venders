@@ -1,7 +1,5 @@
-/* Student accounts on the Campus Vendors API.
-   New student: name, class, phone, Gmail → 6-digit code emailed through Brevo → account created.
-   Returning student: Gmail + phone number.
-   Uncollected orders: 1st = warning, 2nd = permanent block (checked by the server). */
+/* Student accounts: email OTP on each sign-in, with optional Google OAuth.
+   Three cancellations / confirmed no-shows suspend ordering; earlier warnings add a checkout fee. */
 (function () {
   const CFG = window.CVD_CONFIG || {};
   const TOKEN_KEY = "cvd_student_token";
@@ -39,7 +37,18 @@
     },
     forgetSignup() { set(PENDING_KEY, null); },
 
-    async init() { if (this.token()) await this.refresh(); },
+    async init() {
+      const url = new URL(location.href);
+      const googleToken = url.searchParams.get("google_token");
+      const pending = url.searchParams.get("google_pending");
+      const email = url.searchParams.get("google_email");
+      const error = url.searchParams.get("google_error");
+      if (googleToken) { set(TOKEN_KEY, googleToken); this.fromLink = true; }
+      if (pending) { set(TOKEN_KEY, null); this.me = null; this.pendingToken = pending; this.pendingEmail = email || ""; this.needsProfile = true; this.fromLink = true; }
+      if (error) this.linkError = error === "gmail" ? "Google sign-in requires a verified Gmail account." : error === "blocked" ? "This account is suspended from ordering after three warnings." : error === "unconfigured" ? "Google sign-in hasn’t been configured on this deployment yet." : "Google sign-in could not be completed. Please try again.";
+      if (googleToken || pending || error) history.replaceState(null, "", location.pathname + location.hash);
+      if (this.token()) await this.refresh();
+    },
 
     /* re-read the signed-in student (and warnings) from the server */
     async refresh() {
@@ -97,22 +106,12 @@
       await this.refresh();
       return { ok: true };
     },
-    async setPhoneAsPassword() { /* the server signs students in with Gmail + phone directly */ },
-
-    /* returning students: Gmail + phone number, no code */
-    async signIn(email, phone) {
-      if (!this.isGmail(email)) return { error: "Please use a Gmail address (ending in @gmail.com)." };
-      const d = await api("POST", "/api/auth/signin", { email: email.trim().toLowerCase(), phone });
-      if (d.blocked) { this.blocked = true; return { error: d.error, blocked: true }; }
-      if (d.error) return { error: d.error, noAccount: d.status === 401 };
-      this.signedIn(d);
-      await this.refresh();
-      return { ok: true, needsProfile: false };
-    },
+    async setPhoneAsPassword() {},
     async logout() {
       if (this.token()) await api("POST", "/api/auth/logout");
       set(TOKEN_KEY, null);
       this.me = null; this.needsProfile = false; this.pendingToken = null;
+      this.fromLink = false; this.linkError = null;
     },
   };
 

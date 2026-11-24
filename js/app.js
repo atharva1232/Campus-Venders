@@ -20,7 +20,7 @@
   const waitMin = (v) => (v.status === "closed" ? 0 : Math.round(v.queue * v.avgServe));
   const avgRating = (v) => (v.ratings && v.ratings.length ? v.ratings.reduce((a, r) => a + r.stars, 0) / v.ratings.length : null);
   const STATUS_LABEL = { open: "Open", busy: "Busy", closed: "Closed" };
-  const ORDER_LABEL = { placed: "Sent to vendor", accepted: "Being prepared", ready: "Ready for pickup", collected: "Collected", rejected: "Declined", no_show: "Not collected" };
+  const ORDER_LABEL = { placed: "Sent to vendor", accepted: "Being prepared", ready: "Ready for pickup", collected: "Collected", rejected: "Declined", no_show: "Not collected", cancelled: "Cancelled" };
 
   function hoursInfo(v) {
     const m = nowMin();
@@ -91,6 +91,7 @@
           ${link("#/orders", "My orders", "orders", live)}
           ${link("#/dashboard", "For vendors", "dashboard")}
           ${link("#/about", "About", "about")}
+          ${link("#/admin", "Admin", "admin")}
         </nav>
         <a href="#/cart" class="cartbtn ${cartN ? "has" : ""}" aria-label="Cart">🛒<span>${cartN || ""}</span></a>
         ${(() => {
@@ -104,7 +105,7 @@
 
   const initials = (n) => String(n).trim().split(/\s+/).map((w) => w[0]).slice(0, 2).join("").toUpperCase();
 
-  /* ---------- student login ---------- */
+  /* ---------- student OTP sign-in ---------- */
   let afterLogin = null;
   /* Sends the visitor to the login page if no student is signed in. Returns true when it redirected. */
   function needStudent() {
@@ -142,8 +143,8 @@
         <div class="card blocked">
           <div class="blocked-icon">⛔</div>
           <h1>Account blocked</h1>
-          <p>This Gmail account has been <b>permanently blocked</b> from Campus Vendors because orders were placed and not collected twice.</p>
-          <p class="muted small">Uncollected orders waste food and the shop's time. Blocked accounts can't log in or order again. You can still browse shops and menus.</p>
+          <p>This Gmail account has been <b>suspended from ordering</b> after three repeated order cancellations or missed pickups.</p>
+          <p class="muted small">You can still browse shops, menus, and prices. Contact the Campus Vendors team if you believe this is a mistake.</p>
           <a class="btn" href="#/">Back to the directory</a>
         </div>
       </div>`);
@@ -179,7 +180,7 @@
     if (Auth.needsProfile && login.step !== "code") { login.step = "profile"; login.email = Auth.pendingEmail || login.email; }
     if (!Auth.enabled) return page("account", `<div class="empty big"><h2>Student login isn't set up</h2><p class="muted">Set API_URL in js/config.js.</p></div>`);
     const note = (Auth.linkError && login.step === "email"
-        ? `<div class="alert">⚠️ ${/expired|invalid/i.test(Auth.linkError) ? "That sign-in link has expired or was already used. Each link works once. Sign in below, or create the account again to get a new email." : esc(Auth.linkError)}</div>` : "")
+        ? `<div class="alert">⚠️ ${esc(Auth.linkError)}</div>` : "")
       + (afterLogin && afterLogin !== "#/" && login.step === "email" ? `<div class="note big">Sign in to continue. You'll go straight back to where you were.</div>` : "");
     const tabs = `<div class="tabs auth-tabs">
         <button type="button" data-mode="signin" class="${login.mode !== "create" ? "on" : ""}">Sign in</button>
@@ -189,18 +190,18 @@
     if (login.step === "email" && login.mode === "signin") body = `
       <p class="eyebrow">Students</p>
       <h1>Sign in</h1>
-      <p class="lead">Already have an account? Sign in with your Gmail and the phone number you registered with.</p>
+      <p class="lead">Enter your Gmail and we’ll send a one-time code every time you sign in.</p>
       ${note}${tabs}
       <form id="lSignin" class="card form">
         ${gmailField()}
-        ${phoneField("Phone number you registered with")}
-        <button class="btn primary block" type="submit">Sign in</button>
-        <div class="row-between small"><button type="button" class="linkbtn" data-mode="codeonly">Forgot your number? Get a code by email</button></div>
+        <button class="btn primary block" type="submit">Email me a sign-in code</button>
+        <a class="btn block google-btn" href="/api/auth/google">Continue with Google</a>
+        <p class="muted small">For account security, sign-in IP address and browser details are stored for 90 days.</p>
       </form>`;
     if (login.step === "email" && login.mode === "create") body = `
       <p class="eyebrow">Students · step 1 of 2</p>
       <h1>Create your account</h1>
-      <p class="lead">Enter your details and Gmail. We'll email you a code once to confirm it's you. After that you sign in with your Gmail and phone number.</p>
+      <p class="lead">Enter your details and Gmail. We’ll email you a code to verify your account. Future sign-ins also use a one-time code.</p>
       ${note}${tabs}
       <form id="lCreate" class="card form">
         ${detailFields()}
@@ -211,7 +212,7 @@
     if (login.step === "email" && login.mode === "codeonly") body = `
       <p class="eyebrow">Students</p>
       <h1>Sign in with a code</h1>
-      <p class="lead">Enter your Gmail and we'll email you a code. You can check or change your phone number on your account page afterwards.</p>
+      <p class="lead">Enter your Gmail and we'll email you a one-time code.</p>
       ${note}
       <form id="lCodeOnly" class="card form">
         ${gmailField()}
@@ -222,7 +223,7 @@
       <p class="eyebrow">Students${login.mode === "create" ? " · step 2 of 2" : ""}</p>
       <h1>Check your Gmail</h1>
       <p class="lead">We've emailed <b>${esc(login.email)}</b>. It may take a minute, and check Spam if you don't see it.</p>
-      <div class="note big">📩 <b>If the email has a code</b>, type it below.<br>🔗 <b>If it has a button or link</b> instead, just click it. It opens this site and signs you in, and you can close this page.</div>
+      <div class="note big">📩 Enter the six-digit code from your email. It expires in 10 minutes.</div>
       <form id="lCode" class="card form">
         <label>Code from the email<input name="code" required inputmode="numeric" autocomplete="one-time-code" pattern="[0-9]{6,10}" maxlength="10" placeholder="6-digit code" class="codein"></label>
         <button class="btn primary block" type="submit">Verify</button>
@@ -231,7 +232,7 @@
     if (login.step === "profile") body = `
       <p class="eyebrow">Students</p>
       <h1>Finish your account</h1>
-      <p class="lead">Your Gmail <b>${esc(login.email)}</b> is confirmed. Add your details. Shops see them on your orders, and you'll sign in with your Gmail and this phone number.</p>
+      <p class="lead">Your Gmail <b>${esc(login.email)}</b> is confirmed. Add your details so shops can prepare your orders.</p>
       <form id="lProfile" class="card form">
         ${detailFields()}
         <button class="btn primary block" type="submit">Save and continue</button>
@@ -270,14 +271,9 @@
     if (fs) fs.onsubmit = async (e) => {
       e.preventDefault();
       if (!readGmail(fs)) return;
-      login.phone = cleanPhone(fs.phone.value);
-      if (!PHONE.test(login.phone)) return toast("Enter the 10-digit mobile number you registered with", "err");
-      busy(fs, true, "Signing in…");
-      const r = await Auth.signIn(login.email, login.phone);
-      if (r.blocked) return blockedPage();
-      if (r.error) { toast(r.error, "err"); return busy(fs, false, "Sign in"); }
-      if (r.needsProfile) { login.step = "profile"; return loginPage(); }
-      goAfterLogin(`Welcome back, ${S.student().name.split(" ")[0]}!`);
+      busy(fs, true, "Sending…");
+      if (await send()) { login.step = "code"; toast("Sign-in code sent. Check your Gmail.", "ok"); loginPage(); }
+      else if (document.body.contains(fs)) busy(fs, false, "Email me a sign-in code");
     };
     const fn = document.getElementById("lCreate");
     if (fn) fn.onsubmit = async (e) => {
@@ -334,12 +330,12 @@
           <span class="initials lg">${esc(initials(me.name))}</span>
           <div class="grow"><h2>${esc(me.name)}</h2><div class="muted">${esc(me.cls)}</div><div class="muted">📞 ${esc(me.phone || "—")}</div><div class="muted">✉️ ${esc(me.email)}</div></div>
         </div>
-        ${me.strikes ? strikeWarning() : `<div class="card small muted">✓ Good standing. Remember: if you order and don't collect, you get one warning. A second time blocks your account permanently.</div>`}
+        ${me.strikes ? strikeWarning() : `<div class="card small muted">✓ Good standing. Repeated cancellations or missed pickups receive warnings. A third strike suspends ordering.</div>`}
         <form id="sedit" class="card form">
           <h3>Update your details</h3>
           <div class="row2">
             <label>Class<input name="cls" required maxlength="30" value="${esc(me.cls)}"></label>
-            <label>Phone number <span class="muted small">(you sign in with this)</span><input name="phone" type="tel" required inputmode="numeric" maxlength="14" value="${esc(me.phone || "")}"></label>
+          <label>Phone number <span class="muted small">(shops can contact you about pickup)</span><input name="phone" type="tel" required inputmode="numeric" maxlength="14" value="${esc(me.phone || "")}"></label>
           </div>
           <button class="btn">Save</button>
         </form>
@@ -362,12 +358,13 @@
     document.getElementById("slogout").onclick = async () => { S.clearCart(); await Auth.logout(); toast("Logged out"); location.hash = "#/"; };
   }
 
-  /* shown to a student with one uncollected order */
+  /* shown to a student with cancellation / missed-pickup warnings */
   function strikeWarning() {
     const n = Auth.noShows[0];
+    const fee = Number(Auth.me && Auth.me.warningFeePercent) || 0;
     return `<div class="strike">
-      <b>⚠️ Warning: you didn't collect an order</b>
-      <p>${n ? `Order <b>${esc(n.token)}</b> at ${esc(n.shop)} was marked <i>not collected</i> on ${new Date(n.at).toLocaleDateString("en-IN", { day: "numeric", month: "short" })}. ` : ""}This is your one warning. <b>If it happens again, your account will be permanently blocked</b> and can never be used on this website again.</p>
+      <b>⚠️ Warning ${Auth.me.strikes} of 3: repeated order cancellation</b>
+      <p>${n ? `Order <b>${esc(n.token)}</b> at ${esc(n.shop)} was ${n.reason === "cancelled" ? "cancelled" : "not collected"} on ${new Date(n.at).toLocaleDateString("en-IN", { day: "numeric", month: "short" })}. ` : ""}${fee ? (Auth.me.feeOrderId ? `A ${fee}% fee is attached to order ${esc(Auth.me.feeOrderId)} and due at pickup.` : `Your next order includes a ${fee}% fee on its final amount, paid to the shop.`) : ""} <b>A third warning suspends ordering.</b></p>
     </div>`;
   }
 
@@ -619,6 +616,9 @@
     }
     if (needStudent()) return;
     const { v, items, total } = t;
+    const feePercent = Auth.me && Auth.me.feePending && !Auth.me.feeOrderId ? Number(Auth.me.warningFeePercent) || 0 : 0;
+    const warningFee = feePercent ? Math.ceil(total * feePercent / 100) : 0;
+    const due = total + warningFee;
     const slots = pickupSlots(v);
     page("", `
       <a href="#/vendor/${v.id}" class="back">← Back to ${esc(v.name)}</a>
@@ -635,14 +635,16 @@
           </label>
           <label>Note for the shop <span class="muted small">(optional)</span><input name="note" maxlength="80" placeholder="Less sugar, extra chutney…"></label>
           <p class="muted small">Pay at the counter when you collect. Show your token number.</p>
-          <button class="btn primary block" type="submit">Place pre-order · ${rupee(total)}</button>
+          <button class="btn primary block" type="submit">Place pre-order · ${rupee(due)}</button>
         </form>
         <aside class="card">
           <h3>${v.emoji} ${esc(v.name)}</h3>
           <ul class="summary">
             ${items.map((i) => `<li><span>${i.qty} × ${esc(i.name)}</span><span>${rupee(i.price * i.qty)}</span></li>`).join("")}
-            <li class="total"><span>Total</span><span>${rupee(total)}</span></li>
+            ${warningFee ? `<li><span>Cancellation warning fee (${feePercent}%)</span><span>${rupee(warningFee)}</span></li>` : ""}
+            <li class="total"><span>Total due at pickup</span><span>${rupee(due)}</span></li>
           </ul>
+          ${warningFee ? `<p class="muted small">This fee is based on your order total and goes to the merchant. It will be due when you collect this order.</p>` : ""}
           <button class="linkbtn" id="clearCart">Clear cart</button>
         </aside>
       </div>
@@ -658,7 +660,7 @@
         type: "food", vendorId: v.id, items: items.map(({ id, qty }) => ({ id, qty })),
         pickup: f.get("pickup"), note: String(f.get("note") || "").trim(),
       });
-      if (o.error) { btn.disabled = false; btn.textContent = `Place pre-order · ${rupee(total)}`; return toast(o.error, "err"); }
+      if (o.error) { btn.disabled = false; btn.textContent = `Place pre-order · ${rupee(due)}`; return toast(o.error, "err"); }
       S.clearCart();
       location.hash = "#/order/" + o.id;
     };
@@ -777,12 +779,17 @@
       const disc = f.sides.value === "double" ? printing * v.print.doubleSidedDiscount : 0;
       const bind = f.binding.value === "spiral" ? v.print.binding * copies : 0;
       const total = Math.round(printing - disc + bind);
+      const feePercent = Auth.me && Auth.me.feePending && !Auth.me.feeOrderId ? Number(Auth.me.warningFeePercent) || 0 : 0;
+      const warningFee = feePercent ? Math.ceil(total * feePercent / 100) : 0;
+      const due = total + warningFee;
       document.getElementById("pest").innerHTML = `
         <li><span>${pages} pg × ${copies} cop × ${rupee(rate)}</span><span>${rupee(printing)}</span></li>
         ${disc ? `<li><span>Double-sided saving</span><span>−${rupee(disc)}</span></li>` : ""}
         ${bind ? `<li><span>Spiral binding × ${copies}</span><span>${rupee(bind)}</span></li>` : ""}
-        <li class="total"><span>Estimated total</span><span>${rupee(total)}</span></li>`;
-      return { total, pages, copies, rate };
+        ${warningFee ? `<li><span>Cancellation warning fee (${feePercent}%)</span><span>${rupee(warningFee)}</span></li>` : ""}
+        <li class="total"><span>Estimated total</span><span>${rupee(due)}</span></li>
+      ${warningFee ? `<li class="muted small">Fee is paid to the merchant when you collect the job.</li>` : ""}`;
+      return { total, due, warningFee, feePercent, pages, copies, rate };
     }
     async function onFile(file) {
       if (!file) return;
@@ -835,7 +842,8 @@
   /* ---------- ORDERS ---------- */
   const STEPS = ["placed", "accepted", "ready", "collected"];
   function progress(o) {
-    if (o.status === "no_show") return `<div class="alert">The shop marked this order as <b>not collected</b>. ${S.student() && S.student().strikes >= 1 ? "This counts as your warning. Next time your account will be permanently blocked." : ""}</div>`;
+    if (o.status === "cancelled") return `<div class="alert">You cancelled this order. Cancellation warning ${S.student() ? S.student().strikes : ""} of 3 recorded. A third warning suspends ordering.</div>`;
+    if (o.status === "no_show") return `<div class="alert">The shop marked this order as <b>not collected</b>. This counts as a warning toward the three-strike cancellation and missed-pickup policy.</div>`;
     if (o.status === "rejected") return `<div class="alert">The shop couldn't take this order. Please contact them or try another shop.</div>`;
     const idx = STEPS.indexOf(o.status);
     return `<ol class="steps">${STEPS.map((s, i) => `<li class="${i <= idx ? "done" : ""} ${i === idx ? "cur" : ""}">${ORDER_LABEL[s]}</li>`).join("")}</ol>`;
@@ -844,7 +852,7 @@
   function orderPage(id) {
     if (needStudent()) return;
     const o = S.myOrders().find((x) => x.id === id);
-    if (!o) return page("orders", `<div class="empty big"><h2>Order not found</h2><p class="muted">This order isn't on your account. If you placed it with another phone number, log in with that number.</p><a class="btn primary" href="#/orders">My orders</a></div>`);
+    if (!o) return page("orders", `<div class="empty big"><h2>Order not found</h2><p class="muted">This order isn’t on the signed-in account.</p><a class="btn primary" href="#/orders">My orders</a></div>`);
     const v = S.vendor(o.vendorId) || { name: "Shop", emoji: "🏪" };
     page("orders", `
       <a href="#/orders/${o.vendorId}" class="back">← My orders at ${esc(v.name)}</a>
@@ -858,6 +866,7 @@
       <div class="card">
         <ul class="summary">
           ${o.items.map((i) => `<li><span>${i.qty} × ${esc(i.name)}</span><span>${rupee(i.price * i.qty)}</span></li>`).join("")}
+          ${o.warningFee ? `<li><span>Cancellation warning fee (${o.warningFee.percent}%)</span><span>${rupee(o.warningFee.amount)}</span></li>` : ""}
           <li class="total"><span>Pay at counter</span><span>${rupee(o.total)}</span></li>
         </ul>
         ${o.print ? `<p class="small muted">📎 ${esc(o.print.fileName)}</p>` : ""}
@@ -865,8 +874,20 @@
       </div>
       ${o.status === "collected" && !o.rating ? ratingForm(o) : ""}
       ${o.rating ? `<p class="muted">Thanks for your feedback: ${"★".repeat(o.rating.stars)}</p>` : ""}
+      ${o.status === "placed" ? `<button class="btn danger-btn" id="cancelOrder">Cancel this order</button>` : ""}
       <p class="muted small center">This page updates by itself when the shop changes your order.</p>
     `);
+    const cancel = document.getElementById("cancelOrder");
+    if (cancel) cancel.onclick = async () => {
+      const strikeNo = (Auth.me.strikes || 0) + 1;
+      if (!(await ask(`Cancel ${o.token}? This will be warning ${strikeNo} of 3. A fee may apply to your next order; after a third warning, ordering is suspended.`, "Cancel order"))) return;
+      cancel.disabled = true;
+      const result = await S.cancelOrder(o.id);
+      if (result.error) { cancel.disabled = false; return toast(result.error, "err"); }
+      if (result.strike.blocked) toast("Three warnings reached. Ordering is suspended.", "err");
+      else toast(`Order cancelled. Warning ${result.strike.strikes} of 3 recorded.`, "ok");
+      keepScroll = true; route();
+    };
     bindRating(o);
   }
 
@@ -966,17 +987,17 @@
             <label>Phone number<input name="phone" type="tel" required inputmode="numeric" pattern="[0-9]{10}" maxlength="10" placeholder="Shop's 10-digit number"></label>
           </div>
           <button class="btn primary block">Open dashboard</button>
-          <p class="muted small">Use the phone number registered with your shop. Logging in for the first time to a shop with no number yet saves the number you enter. Tip: open the student view in another tab to watch updates appear live.</p>
+          <p class="muted small">Use the phone number and pincode registered with your approved shop. Tip: open the student directory in another tab to watch updates appear live.</p>
         </form>
         <div class="card newshop">
-          <h3>New here? Open your shop</h3>
-          <p class="muted">Run a tea stall, print shop, tiffin centre or any small shop near campus? List it for free in about two minutes. Students will see your status, menu and prices, and can pre-order.</p>
+          <h3>New here? Apply to list your shop</h3>
+          <p class="muted">Submit your shop details for review. It will appear in the directory after an admin approves it.</p>
           <ul class="plain small">
             <li>✓ No fees, no app to install</li>
             <li>✓ Set your own timings and prices</li>
             <li>✓ Take pre-orders and print jobs</li>
           </ul>
-          <a class="btn primary block" href="#/dashboard/new">Open a new shop →</a>
+          <a class="btn primary block" href="#/dashboard/new">Apply to list a shop →</a>
         </div>
       </div>
     `);
@@ -1002,8 +1023,8 @@
     const cats = [...new Set(S.state.vendors.map((v) => v.category))];
     page("dashboard", `
       <a href="#/dashboard" class="back">← Back to vendor login</a>
-      <h1>Open a new shop</h1>
-      <p class="lead">Fill in your shop details. You can add menu items and prices from your dashboard straight after.</p>
+      <h1>Apply to list your shop</h1>
+      <p class="lead">The admin reviews every new shop application by email. Approved shops can finish setting up their menu in the vendor dashboard.</p>
       <form id="newShop" class="card form narrow-wide">
         <h3>About your shop</h3>
         <label>Shop name<input name="name" required maxlength="40" placeholder="e.g. Sri Lakshmi Juice Centre"></label>
@@ -1023,6 +1044,7 @@
         <label>Pincode<input name="pincode" required inputmode="numeric" pattern="[0-9]{6}" maxlength="6" value="${esc(DEFAULT_PINCODE)}"></label>
 
         <h3>Contact</h3>
+        <label>Owner Gmail<input name="ownerEmail" type="email" required autocomplete="email" placeholder="owner@gmail.com"></label>
         <div class="row2">
           <label>Phone <span class="muted small">(you'll log in with this)</span><input name="phone" type="tel" required pattern="[0-9]{10}" maxlength="10" placeholder="10-digit number"></label>
           <label>WhatsApp <span class="muted small">(optional)</span><input name="whatsapp" type="tel" pattern="[0-9]{10}" maxlength="10" placeholder="Same as phone if blank"></label>
@@ -1047,7 +1069,7 @@
           <label>Spiral binding (₹)<input name="binding" type="number" min="0" value="30"></label>
         </div>
 
-        <button class="btn primary block" type="submit">Open my shop</button>
+        <button class="btn primary block" type="submit">Send application for approval</button>
       </form>
     `);
     const f = document.getElementById("newShop");
@@ -1065,15 +1087,18 @@
       const wa = f.whatsapp.value.trim() || f.phone.value.trim();
       const m = nowMin();
       const v = await S.addVendor({
-        name, category: f.category.value.trim(), emoji: f.emoji.value, location: f.location.value.trim(),
+        name, ownerEmail: f.ownerEmail.value.trim().toLowerCase(), category: f.category.value.trim(), emoji: f.emoji.value, location: f.location.value.trim(),
         distance: Math.max(0, Number(f.distance.value) || 0), phone: f.phone.value.trim(), whatsapp: "91" + wa,
         hours, pincode: f.pincode.value.trim(),
         status: hours.some(([o, c]) => m >= toMin(o) && m < toMin(c)) ? "open" : "closed",
         ...(f.isPrint.checked ? { print: { bw: Number(f.bw.value) || 0, color: Number(f.color.value) || 0, doubleSidedDiscount: 0.2, binding: Number(f.binding.value) || 0 } } : {}),
       });
       if (v.error) return toast(v.error, "err");
-      toast(`${v.name} is now listed. Add your menu next.`, "ok");
-      loginAs(v.id);
+      if (v.pending) {
+        page("dashboard", `<div class="login-wrap"><section class="card"><p class="eyebrow">Application received</p><h1>${esc(name)} is awaiting review</h1><p class="lead">${esc(v.message)}</p><p class="muted small">Application reference: <span class="mono">${esc(v.applicationId)}</span></p><p class="muted small">Your shop won’t appear in search until the admin approves it. Keep your owner Gmail available for updates.</p><a class="btn primary" href="#/">Back to directory</a></section></div>`);
+        return;
+      }
+      toast("Application submitted for review", "ok");
     };
   }
 
@@ -1086,7 +1111,7 @@
       new: orders.filter((o) => o.status === "placed"),
       accepted: orders.filter((o) => o.status === "accepted"),
       ready: orders.filter((o) => o.status === "ready"),
-      done: orders.filter((o) => ["collected", "rejected", "no_show"].includes(o.status)),
+      done: orders.filter((o) => ["collected", "rejected", "no_show", "cancelled"].includes(o.status)),
     };
     const todaySales = orders.filter((o) => o.status === "collected" && new Date(o.createdAt).toDateString() === new Date().toDateString()).reduce((a, o) => a + o.total, 0);
     const waShare = encodeURIComponent(`${v.emoji} ${v.name} is ${STATUS_LABEL[v.status].toUpperCase()} now${v.status !== "closed" ? ` · ~${waitMin(v)} min wait` : ""}.${v.note ? " " + v.note : ""} See menu & pre-order on Campus Vendors.`);
@@ -1122,7 +1147,7 @@
           ${buckets[dashUi.tab].map((o) => `
             <div class="order">
               <div class="order-top"><span class="token sm">${esc(o.token)}</span><div class="grow"><b>${esc(o.student.name)}</b> <span class="muted small">${esc(o.student.cls || o.student.usn || "")}${o.student.phone ? ` · <a href="tel:${esc(o.student.phone)}">📞 ${esc(o.student.phone)}</a>` : ""}${o.student.email ? ` · <a href="mailto:${esc(o.student.email)}">✉️ ${esc(o.student.email)}</a>` : ""}</span><div class="muted small">${o.type === "print" ? "🖨️ Print job" : "🍽️ Pre-order"} · ${clock(o.createdAt)} · Pickup ${o.pickup === "ASAP" ? "ASAP" : fmtTime(o.pickup)}</div></div><b>${rupee(o.total)}</b></div>
-              <ul class="plain small">${o.items.map((i) => `<li>${i.qty} × ${esc(i.name)}</li>`).join("")}</ul>
+              <ul class="plain small">${o.items.map((i) => `<li>${i.qty} × ${esc(i.name)}</li>`).join("")}${o.warningFee ? `<li>Cancellation warning fee (${o.warningFee.percent}%) · ${rupee(o.warningFee.amount)} goes to the shop</li>` : ""}</ul>
               ${o.print ? `<div class="small">📎 ${esc(o.print.fileName)} ${o.print.hasFile ? `<button class="linkbtn" data-file="${o.id}">Download</button>` : `<span class="muted">(too large to keep in demo storage)</span>`}</div>` : ""}
               ${o.note ? `<div class="small note">“${esc(o.note)}”</div>` : ""}
               <div class="order-actions">
@@ -1130,6 +1155,7 @@
                 ${o.status === "accepted" ? `<button class="btn primary" data-o="${o.id}" data-s="ready">Mark ready</button>` : ""}
                 ${o.status === "ready" ? `<button class="btn primary" data-o="${o.id}" data-s="collected">Collected & paid</button><button class="btn danger-btn" data-noshow="${o.id}">Not collected</button>` : ""}
                 ${o.status === "no_show" ? `<span class="ostatus os-no_show">Not collected · reported</span>` : ""}
+                ${o.status === "cancelled" ? `<span class="ostatus os-cancelled">Cancelled by student</span>` : ""}
                 ${o.rating ? `<span class="small">${"★".repeat(o.rating.stars)} ${esc(o.rating.comment || "")}</span>` : ""}
               </div>
             </div>`).join("") || `<p class="muted center">Nothing here right now.</p>`}
@@ -1191,12 +1217,12 @@
     app.querySelectorAll("[data-noshow]").forEach((b) => b.onclick = async () => {
       const o = S.state.orders.find((x) => x.id === b.dataset.noshow);
       if (!o) return;
-      if (!(await ask(`Mark ${o.token} (${o.student.name}) as NOT collected? The student gets a warning the first time and is permanently blocked the second time.`, "Not collected"))) return;
+      if (!(await ask(`Mark ${o.token} (${o.student.name}) as not collected? This counts toward the student's three-warning cancellation and missed-pickup policy.`, "Not collected"))) return;
       b.disabled = true;
       const r = await S.setOrderStatus(o.id, "no_show"); // the server records the warning / block
       if (r.error) { b.disabled = false; return toast("Couldn't report it: " + r.error, "err"); }
       const k = r.strike || {};
-      toast(k.blocked ? `${o.student.name} has been permanently blocked (2nd uncollected order)` : `${o.student.name} has been warned (1st uncollected order)`, k.blocked ? "err" : "ok");
+      toast(k.blocked ? `${o.student.name} reached three warnings and is suspended from ordering` : `${o.student.name} has warning ${k.strikes} of 3${k.feePercent ? ` · ${k.feePercent}% next-order fee` : ""}`, k.blocked ? "err" : "ok");
       rerender();
     });
     app.querySelectorAll("[data-file]").forEach((b) => b.onclick = async () => {
@@ -1347,6 +1373,65 @@
     `);
   }
 
+  /* ---------- ADMIN ---------- */
+  const adminUi = { step: "email", email: "", lastSent: 0 };
+  async function adminPage() {
+    if (!S.adminToken()) {
+      const step = adminUi.step;
+      page("admin", `<div class="login-wrap"><p class="eyebrow">Administration</p><h1>Admin sign in</h1><p class="lead">Use the configured admin Gmail. We’ll email a one-time code before showing shop applications or account security events.</p>
+        <form id="adminLogin" class="card form">${step === "email" ? `<label>Admin Gmail<input name="email" type="email" required autocomplete="email" value="${esc(adminUi.email)}" placeholder="admin@gmail.com"></label><button class="btn primary block">Send admin code</button>` : `<p class="muted">Code sent to <b>${esc(adminUi.email)}</b>.</p><label>One-time code<input name="code" required inputmode="numeric" autocomplete="one-time-code" pattern="[0-9]{6}" maxlength="6"></label><button class="btn primary block">Verify and open admin</button><button class="linkbtn" type="button" id="adminBack">Use a different email</button>`}</form></div>`);
+      const form = document.getElementById("adminLogin");
+      form.onsubmit = async (e) => {
+        e.preventDefault(); const btn = form.querySelector("button[type=submit],button:not([type])"); btn.disabled = true;
+        if (adminUi.step === "email") {
+          adminUi.email = form.email.value.trim().toLowerCase();
+          const r = await S.adminSendCode(adminUi.email);
+          btn.disabled = false;
+          if (r.error) return toast(r.error, "err");
+          adminUi.step = "code"; adminUi.lastSent = Date.now();
+          if (r.devCode) toast("Local admin test code: " + r.devCode, "ok");
+          else toast("Admin code sent to Gmail", "ok");
+          return adminPage();
+        }
+        const r = await S.adminVerify(form.code.value);
+        btn.disabled = false;
+        if (r.error) return toast(r.error, "err");
+        adminUi.step = "email"; toast("Admin access verified", "ok"); return adminPage();
+      };
+      const back = document.getElementById("adminBack");
+      if (back) back.onclick = () => { adminUi.step = "email"; adminPage(); };
+      return;
+    }
+    const [apps, feeData, security] = await Promise.all([S.adminApplications(), S.adminSettings(), S.adminSecurityEvents()]);
+    if ([apps, feeData, security].some((x) => x.status === 401)) { await S.adminLogout(); return adminPage(); }
+    const error = apps.error || feeData.error || security.error;
+    if (error) return page("admin", `<div class="card"><h1>Admin dashboard unavailable</h1><p class="muted">${esc(error)}</p><button class="btn" id="adminRetry">Retry</button></div>`), document.getElementById("adminRetry").onclick = adminPage;
+    const settings = feeData.settings || { warning1Percent: 5, warning2Percent: 10 };
+    const applications = apps.applications || [];
+    const events = security.events || [];
+    page("admin", `<div class="dash-head"><div><p class="eyebrow">Admin workspace</p><h1>Review & safety</h1></div><button class="btn" id="adminLogout">Sign out</button></div>
+      <section class="card sec"><div class="dash-head"><div><h2>Shop applications</h2><p class="muted small">New shops stay hidden until you approve them.</p></div><span class="badge ${applications.length ? "" : "zero"}">${applications.length}</span></div>
+        ${applications.length ? `<div class="list">${applications.map((a) => `<article class="card application"><div class="order-top"><div class="avatar">${esc(a.emoji || "🏪")}</div><div class="grow"><h3>${esc(a.name)}</h3><div class="muted small">${esc(a.category)} · ${esc(a.location)} · ${Number(a.distance) || 0} m</div></div><span class="ostatus os-placed">Pending review</span></div><div class="row2 small"><div><b>Owner</b><br>${esc(a.ownerEmail)}</div><div><b>Phone</b><br>${esc(a.phone)}</div><div><b>Pincode</b><br>${esc(a.pincode)}</div><div><b>Hours</b><br>${(a.hours || []).map((h) => `${esc(fmtTime(h[0]))}–${esc(fmtTime(h[1]))}`).join(" · ")}</div></div><p class="muted small">${a.print ? `Print rates: B/W ₹${esc(a.print.bw)}, colour ₹${esc(a.print.color)}, binding ₹${esc(a.print.binding)}` : "Food / retail shop"} · submitted ${new Date(a.submittedAt).toLocaleString("en-IN")}</p><div class="inline"><button class="btn primary small" data-app-action="approve" data-app-id="${esc(a.id)}">Approve shop</button><button class="btn small" data-app-action="reject" data-app-id="${esc(a.id)}">Reject</button></div></article>`).join("")}</div>` : `<div class="empty"><h3>All caught up</h3><p class="muted">New merchant applications will appear here.</p></div>`}
+      </section>
+      <section class="card sec"><h2>Cancellation fee settings</h2><p class="muted small">The first and second warnings add a percentage of the next order total for the merchant. A third warning suspends ordering.</p><form id="feeSettings" class="row3 form"><label>Warning 1 fee (%)<input name="warning1" type="number" min="0" max="50" step="0.5" value="${esc(settings.warning1Percent)}"></label><label>Warning 2 fee (%)<input name="warning2" type="number" min="0" max="50" step="0.5" value="${esc(settings.warning2Percent)}"></label><button class="btn primary" type="submit">Save fee settings</button></form></section>
+      <section class="card sec"><h2>Recent sign-ins</h2><p class="muted small">IP addresses are security signals, not unique device IDs. Shared addresses can belong to different people.</p>${events.length ? `<div class="table-scroll"><table class="admin-table"><thead><tr><th>Account</th><th>IP address</th><th>Method</th><th>When</th><th>Signal</th></tr></thead><tbody>${events.map((e) => `<tr><td>${esc(e.email)}</td><td class="mono">${esc(e.ip)}</td><td>${esc(e.method)}</td><td>${new Date(e.at).toLocaleString("en-IN")}</td><td>${e.sharedAccounts > 1 ? `<span class="pill pill-busy">Shared by ${e.sharedAccounts} accounts</span>` : `<span class="muted">Single account</span>`}</td></tr>`).join("")}</tbody></table></div>` : `<p class="muted">Sign-in history will appear here.</p>`}</section>`);
+    document.getElementById("adminLogout").onclick = async () => { await S.adminLogout(); adminPage(); };
+    document.getElementById("feeSettings").onsubmit = async (e) => {
+      e.preventDefault();
+      const r = await S.saveAdminSettings({ warning1Percent: Number(e.target.warning1.value), warning2Percent: Number(e.target.warning2.value) });
+      if (r.error) return toast(r.error, "err");
+      toast("Warning fee percentages saved", "ok"); adminPage();
+    };
+    app.querySelectorAll("[data-app-action]").forEach((btn) => btn.onclick = async () => {
+      const action = btn.dataset.appAction;
+      if (!(await ask(`${action === "approve" ? "Approve" : "Reject"} this shop application?`, action === "approve" ? "Approve shop" : "Reject"))) return;
+      btn.disabled = true;
+      const r = await S.reviewApplication(btn.dataset.appId, action);
+      if (r.error) { btn.disabled = false; return toast(r.error, "err"); }
+      toast(`${r.name} ${action === "approve" ? "approved" : "rejected"}`, "ok"); adminPage();
+    });
+  }
+
   function notFound() { page("", `<div class="empty big"><h2>Page not found</h2><a class="btn primary" href="#/">Go to directory</a></div>`); }
 
   /* ---------- router ---------- */
@@ -1370,6 +1455,7 @@
       case "blocked": return Auth.blocked ? blockedPage() : loginPage();
       case "account": return accountPage();
       case "poster": return poster();
+      case "admin": return adminPage();
       default: return notFound();
     }
   }
@@ -1439,7 +1525,7 @@
     else if (Auth.linkError) history.replaceState(null, "", "#/login"); // the login page explains it
     else if (Auth.fromLink && Auth.me) {
       history.replaceState(null, "", "#/");
-      setTimeout(() => toast(`Signed in. Welcome, ${Auth.me.name.split(" ")[0]}! Next time just use your Gmail and phone number.`, "ok"), 300);
+      setTimeout(() => toast(`Signed in with Google. Welcome, ${Auth.me.name.split(" ")[0]}!`, "ok"), 300);
     } else if (Auth.fromLink && Auth.needsProfile) history.replaceState(null, "", "#/login");
     route();
   });

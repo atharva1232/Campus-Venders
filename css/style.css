@@ -300,6 +300,8 @@ input:focus, select:focus, .btn:focus-visible, .chip:focus-visible { outline: 3p
 .os-ready { background: var(--open-bg); color: var(--open); }
 .os-accepted { background: var(--busy-bg); color: var(--busy); }
 .os-rejected { background: var(--closed-bg); color: var(--closed); }
+.os-placed { background: var(--busy-bg); color: #775600; }
+.os-cancelled { background: var(--closed-bg); color: var(--closed); }
 .stars { display: flex; gap: 4px; margin-bottom: 10px; }
 .stars button { background: none; border: 0; font-size: 2rem; color: var(--accent); cursor: pointer; padding: 0 2px; }
 #rate input { margin-bottom: 10px; }
@@ -319,6 +321,15 @@ input:focus, select:focus, .btn:focus-visible, .chip:focus-visible { outline: 3p
 .order { border: 1px solid var(--line); border-radius: 12px; padding: 12px; background: #fff; }
 .order-top { display: flex; gap: 10px; align-items: center; margin-bottom: 6px; }
 .order-actions { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 8px; }
+.google-btn { background: #fff; border-color: var(--line); }
+.google-btn:hover { background: #f8f5ee; }
+.application { margin: 0; background: #fff; }
+.application .row2 { margin: 12px 0; }
+.table-scroll { overflow-x: auto; }
+.admin-table { border-collapse: collapse; width: 100%; min-width: 660px; font-size: .85rem; }
+.admin-table th, .admin-table td { text-align: left; padding: 10px 9px; border-bottom: 1px solid var(--line); vertical-align: top; }
+.admin-table th { color: var(--muted); font-size: .75rem; text-transform: uppercase; letter-spacing: .06em; }
+.admin-table .mono { word-break: normal; }
 
 /* about */
 .statgrid { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 12px; margin: 18px 0; }
