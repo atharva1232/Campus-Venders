@@ -9,7 +9,7 @@ import * as WebBrowser from 'expo-web-browser';
 import { StatusBar as ExpoStatusBar } from 'expo-status-bar';
 
 WebBrowser.maybeCompleteAuthSession();
-const API = process.env.EXPO_PUBLIC_API_URL || 'https://campus-vendors.onrender.com';
+const API = process.env.EXPO_PUBLIC_API_URL || 'https://campus-vendors-mobile-api.onrender.com';
 const C = { orange:'#e2672b', green:'#16302a', cream:'#f5f0e6', card:'#fffdf9', muted:'#6c7a73', line:'#e9e2d6', pale:'#f8eee2', white:'#fff' };
 const money = n => `₹${Math.round(Number(n)||0)}`;
 const normalize = x => (Array.isArray(x) ? x : []).map(v => ({...v, id:v.id || v._id}));

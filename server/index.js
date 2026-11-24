@@ -119,6 +119,7 @@ app.use("/css", express.static(path.join(ROOT, "css"), noCache));
 app.use("/js", express.static(path.join(ROOT, "js"), noCache));
 app.get(["/", "/index.html"], (req, res) => { res.set("Cache-Control", "no-cache"); res.sendFile(path.join(ROOT, "index.html")); });
 app.get("/api/health", (req, res) => res.json({ ok: true, service: "campus-vendors", db: DB.kind, email: process.env.BREVO_API_KEY ? "brevo" : "not set" }));
+app.get("/api/mobile/health", (req,res)=>res.json({ok:true,service:"campus-vendors-mobile-api",db:DB.kind,emailConfigured:!!process.env.BREVO_API_KEY,merchantReviewConfigured:!!process.env.ADMIN_EMAIL}));
 
 /* ---------- student sign-up / sign-in ---------- */
 // 1. Email a 6-digit code. `details` (name, class, phone) come with it when creating an account.
