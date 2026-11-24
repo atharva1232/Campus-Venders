@@ -7,3 +7,5 @@ Thumbs.db
 node_modules/
 server/.env
 server/.env.*
+# Local secrets written by `elevenlabs onboard`
+/.env.local

@@ -26,10 +26,12 @@ services:
         sync: false
       - key: ADMIN_EMAIL
         sync: false
-      - key: GEMINI_API_KEY
+      - key: QWEN_API_KEY
         sync: false
-      - key: GEMINI_MODEL
-        value: gemini-3.5-flash-lite
+      - key: QWEN_API_URL
+        value: https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions
+      - key: QWEN_MODEL
+        value: qwen3.8-flash
       - key: ELEVENLABS_API_KEY
         sync: false
       - key: ELEVENLABS_VOICE_ID
