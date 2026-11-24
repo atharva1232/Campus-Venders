@@ -364,14 +364,14 @@ function VendorVoiceAssistant({ language, orders, ask, confirm }) {
 
   return (
     <Panel title={language === 'hi' ? 'आवाज़ से दुकान चलाएँ' : language === 'kn' ? 'ಧ್ವನಿಯಿಂದ ಅಂಗಡಿ ನಿರ್ವಹಿಸಿ' : 'Talk to your shop helper'} description={language === 'hi' ? 'हिंदी, ಕನ್ನಡ या अंग्रेज़ी में बोलें। बदलाव सेव करने से पहले आपकी पुष्टि ज़रूरी है।' : language === 'kn' ? 'ಕನ್ನಡ, ಹಿಂದಿ ಅಥವಾ ಇಂಗ್ಲಿಷ್‌ನಲ್ಲಿ ಮಾತನಾಡಿ. ಬದಲಾವಣೆ ಉಳಿಸಲು ಮೊದಲು ನಿಮ್ಮ ದೃಢೀಕರಣ ಬೇಕು.' : `Speak in ${languageName}. Review and confirm before any shop change is saved.`}>
-      <Field label={language === 'hi' ? 'आपका अनुरोध' : language === 'kn' ? 'ನಿಮ್ಮ ವಿನಂತಿ' : 'Your request'} value={question} onChangeText={setQuestion} placeholder={language === 'hi' ? 'जैसे: दुकान खोलो' : language === 'kn' ? 'ಉದಾ: ಅಂಗಡಿ ತೆರೆಯಿರಿ' : 'For example: open my shop'} multiline />
+      <Field label={language === 'hi' ? 'आपका अनुरोध' : language === 'kn' ? 'ನಿಮ್ಮ ವಿನಂತಿ' : 'Your request'} value={question} onChangeText={setQuestion} placeholder={language === 'hi' ? 'जैसे: आज की बिक्री, मेन्यू या ऑर्डर' : language === 'kn' ? 'ಉದಾ: ಇಂದಿನ ಮಾರಾಟ, ಮೆನು ಅಥವಾ ಆರ್ಡರ್‌ಗಳು' : "For example: today's sales, menu, or orders"} multiline />
       <View style={S.wrapRow}>
         <Action label={listening ? 'Listening…' : language === 'hi' ? 'बोलें' : language === 'kn' ? 'ಮಾತನಾಡಿ' : 'Speak'} icon="mic-outline" tone="secondary" onPress={startListening} disabled={working || listening} />
         <Action label={working ? 'Please wait…' : language === 'hi' ? 'पूछें' : language === 'kn' ? 'ಕೇಳಿ' : 'Ask helper'} icon="chatbubble-ellipses-outline" onPress={() => submit()} disabled={working || !question.trim()} />
       </View>
       {!!reply && <Text accessibilityRole="alert" style={S.body}>{reply}</Text>}
       {!!actionLabel && <View style={S.panel}><Text style={S.label}>{actionLabel}</Text><Text style={S.caption}>Confirm this suggested change</Text><Action label={language === 'hi' ? 'हाँ, सेव करें' : language === 'kn' ? 'ಹೌದು, ಉಳಿಸಿ' : 'Confirm and save'} icon="checkmark-circle-outline" onPress={confirmSuggestion} disabled={working} /><Action label={language === 'hi' ? 'नहीं' : language === 'kn' ? 'ಬೇಡ' : 'Discard'} tone="secondary" onPress={() => setAction(null)} disabled={working} /></View>}
-      <Text style={S.caption}>{orders.length ? `${orders.length} shop order${orders.length === 1 ? '' : 's'} available for status updates.` : 'The helper can answer shop questions and draft simple updates.'}</Text>
+      <Text style={S.caption}>{orders.length ? `${orders.length} shop order${orders.length === 1 ? '' : 's'} available for status updates.` : language === 'hi' ? 'बिना Qwen key के आज की बिक्री, मेन्यू, कतार या हाल के ऑर्डर पूछें।' : language === 'kn' ? 'Qwen key ಇಲ್ಲದೆ ಇಂದಿನ ಮಾರಾಟ, ಮೆನು, ಸರತಿ ಅಥವಾ ಇತ್ತೀಚಿನ ಆರ್ಡರ್‌ಗಳ ಬಗ್ಗೆ ಕೇಳಿ.' : "Without the Qwen key, ask about today's sales, menu, queue, or recent orders."}</Text>
     </Panel>
   );
 }

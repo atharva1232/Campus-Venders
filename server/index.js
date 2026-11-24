@@ -985,13 +985,56 @@ app.put("/api/vendor/me", wrap(async (req, res) => {
 const NEXT = { placed: ["accepted", "rejected"], accepted: ["ready"], ready: ["collected", "no_show"] };
 const vendorAssistantLimit = limitMobile("vendor-assistant", 30, 60 * minute);
 
+function localMerchantAnswer(text, language, shop, recentOrders, todayOrders) {
+  const query = String(text || "").toLocaleLowerCase();
+  const includesAny = (...terms) => terms.some(term => query.includes(term));
+  const money = amount => new Intl.NumberFormat("en-IN", { style: "currency", currency: "INR", maximumFractionDigits: 2 }).format(Number(amount) || 0);
+  const menu = Array.isArray(shop.menu) ? shop.menu : [];
+
+  if (includesAny("sales", "revenue", "earned", "earning", "बिक्री", "कमाई", "आमदनी", "ಮಾರಾಟ", "ಆದಾಯ", "ಗಳಿಕೆ")) {
+    const collected = todayOrders.filter(order => order.status === "collected");
+    const totalSales = collected.reduce((sum, order) => sum + Number(order.data?.total ?? order.data?.subtotal ?? 0), 0);
+    if (language === "hi") return `आज ${todayOrders.length} ऑर्डर बने, जिनमें ${collected.length} पूरे हुए। पूरे हुए ऑर्डर की दर्ज बिक्री ${money(totalSales)} है।`;
+    if (language === "kn") return `ಇಂದು ${todayOrders.length} ಆರ್ಡರ್‌ಗಳು ಬಂದಿವೆ; ${collected.length} ಪೂರ್ಣಗೊಂಡಿವೆ. ಪೂರ್ಣಗೊಂಡ ಆರ್ಡರ್‌ಗಳ ದಾಖಲಾದ ಮಾರಾಟ ${money(totalSales)}.`;
+    return `Today: ${todayOrders.length} orders placed, ${collected.length} collected. Recorded sales from collected orders: ${money(totalSales)}.`;
+  }
+  if (includesAny("menu", "items", "prices", "food", "मेन्यू", "मेनू", "आइटम", "खाना", "कीमत", "ಬೆಲೆ", "ಮೆನು", "ಐಟಂ", "ತಿಂಡಿ")) {
+    const list = menu.length ? menu.map(item => `${item.name}: ${money(item.price)}${item.inStock === false ? " (out of stock)" : ""}`).join("; ") : "no menu items are listed";
+    if (language === "hi") return menu.length ? `आपकी मेन्यू सूची: ${list}।` : "आपके मेन्यू में अभी कोई आइटम दर्ज नहीं है।";
+    if (language === "kn") return menu.length ? `ನಿಮ್ಮ ಮೆನು: ${list}.` : "ನಿಮ್ಮ ಮೆನುವಿನಲ್ಲಿ ಇನ್ನೂ ಯಾವುದೇ ಐಟಂ ಇಲ್ಲ.";
+    return `Your menu: ${list}.`;
+  }
+  if (includesAny("queue", "wait", "waiting", "कतार", "क्यू", "इंतज़ार", "ಪ್ರತೀಕ್ಷೆ", "ಸರತಿ", "ಕ್ಯೂ")) {
+    const queue = Math.max(0, Number(shop.queue) || 0);
+    if (language === "hi") return `अभी आपकी दुकान की कतार ${queue} है।`;
+    if (language === "kn") return `ಈಗ ನಿಮ್ಮ ಅಂಗಡಿಯ ಸರತಿಯಲ್ಲಿ ${queue} ಇದೆ.`;
+    return `Your current shop queue is ${queue}.`;
+  }
+  if (includesAny("status", "open", "closed", "busy", "दुकान", "खुला", "बंद", "व्यस्त", "ಸ್ಥಿತಿ", "ಅಂಗಡಿ", "ತೆರೆದ", "ಮುಚ್ಚಿದ", "ಬ್ಯುಸಿ")) {
+    const status = String(shop.status || "unknown");
+    if (language === "hi") return `आपकी दुकान अभी ${({ open: "खुली", busy: "व्यस्त", closed: "बंद" })[status] || "अज्ञात स्थिति में"} है।`;
+    if (language === "kn") return `ನಿಮ್ಮ ಅಂಗಡಿ ಈಗ ${({ open: "ತೆರೆದಿದೆ", busy: "ವ್ಯಸ್ತವಾಗಿದೆ", closed: "ಮುಚ್ಚಿದೆ" })[status] || "ಯಾವ ಸ್ಥಿತಿಯಲ್ಲಿದೆ ತಿಳಿದಿಲ್ಲ"}.`;
+    return `Your shop is currently ${status}.`;
+  }
+  if (includesAny("orders", "order", "pickup", "ऑर्डर", "ऑर्डर", "ಪಿಕಪ್", "ಆರ್ಡರ್")) {
+    const counts = recentOrders.reduce((all, order) => ({ ...all, [order.status]: (all[order.status] || 0) + 1 }), {});
+    const summary = Object.entries(counts).map(([status, count]) => `${status}: ${count}`).join(", ") || "none in the latest 50 orders";
+    if (language === "hi") return `हाल के ${recentOrders.length} ऑर्डर की स्थिति: ${summary}।`;
+    if (language === "kn") return `ಇತ್ತೀಚಿನ ${recentOrders.length} ಆರ್ಡರ್‌ಗಳ ಸ್ಥಿತಿ: ${summary}.`;
+    return `Status of your ${recentOrders.length} most recent orders: ${summary}.`;
+  }
+  const status = String(shop.status || "unknown");
+  if (language === "hi") return `आपकी दुकान ${shop.name || ""} अभी ${status} है, कतार ${Math.max(0, Number(shop.queue) || 0)} है, ${menu.length} मेन्यू आइटम और ${recentOrders.length} हाल के ऑर्डर दर्ज हैं। बिना Qwen key के मैं दुकान, मेन्यू, कतार, ऑर्डर और आज की बिक्री के सवालों का जवाब दे सकता हूँ।`;
+  if (language === "kn") return `ನಿಮ್ಮ ಅಂಗಡಿ ${shop.name || ""} ಈಗ ${status} ಇದೆ, ಸರತಿ ${Math.max(0, Number(shop.queue) || 0)} ಇದೆ, ${menu.length} ಮೆನು ಐಟಂಗಳು ಮತ್ತು ${recentOrders.length} ಇತ್ತೀಚಿನ ಆರ್ಡರ್‌ಗಳು ದಾಖಲಾಗಿವೆ. Qwen key ಇಲ್ಲದೆ ಅಂಗಡಿ, ಮೆನು, ಸರತಿ, ಆರ್ಡರ್ ಮತ್ತು ಇಂದಿನ ಮಾರಾಟದ ಪ್ರಶ್ನೆಗಳಿಗೆ ಉತ್ತರಿಸಬಹುದು.`;
+  return `Your shop ${shop.name || ""} is ${status}, queue is ${Math.max(0, Number(shop.queue) || 0)}, with ${menu.length} menu items and ${recentOrders.length} recent orders recorded. Without the Qwen key I can answer questions about shop status, menu, queue, orders, and today's sales.`;
+}
+
 // Qwen can only draft a bounded action. The merchant confirms it in the app,
 // then the app applies it through the existing vendor-authenticated endpoints.
 app.post("/api/mobile/vendor/assistant", vendorAssistantLimit, wrap(async (req, res) => {
   const vendor = await needVendor(req, res);
   if (!vendor) return;
   const apiKey = String(process.env.QWEN_API_KEY || "").trim();
-  if (!apiKey) return fail(res, 503, "The Qwen helper is waiting for its API key. Add QWEN_API_KEY to the API service environment.");
   const text = str(req.body?.text, 1000);
   const language = ({ en: "English", hi: "Hindi", kn: "Kannada" })[req.body?.language];
   if (!text || !language) return fail(res, 400, "Enter a request and choose English, Hindi, or Kannada.");
@@ -1000,6 +1043,13 @@ app.post("/api/mobile/vendor/assistant", vendorAssistantLimit, wrap(async (req, 
     token: order.data.token, status: order.status,
     summary: order.data.type === "print" ? "PDF print job" : (order.data.items || []).map(item => `${item.qty} x ${item.name}`).join(", "),
   }));
+  if (!apiKey) {
+    const dateKey = new Intl.DateTimeFormat("en-CA", { timeZone: "Asia/Kolkata" }).format(new Date());
+    const dayStart = new Date(`${dateKey}T00:00:00+05:30`);
+    const nextDay = new Date(dayStart.getTime() + 24 * 60 * 60 * 1000);
+    const todayOrders = await C.orders.find({ vendorId: vendor._id, createdAt: { $gte: dayStart, $lt: nextDay } }).toArray();
+    return res.json({ reply: localMerchantAnswer(text, req.body?.language, shop, recentOrders, todayOrders), action: null });
+  }
   const prompt = [
     `Merchant request (untrusted input): ${JSON.stringify(text)}`,
     `Shop context: ${JSON.stringify({ name: shop.name, status: shop.status, queue: shop.queue, note: shop.note, menu: (shop.menu || []).map(item => ({ name: item.name, price: item.price, inStock: item.inStock })), orders: recentOrders })}`,
