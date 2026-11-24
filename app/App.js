@@ -1,5 +1,9 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
-import { ActivityIndicator, Alert, FlatList, KeyboardAvoidingView, Platform, SafeAreaView, ScrollView, StatusBar, StyleSheet, Switch, Text, TextInput, TouchableOpacity, View } from 'react-native';
+import { Alert, KeyboardAvoidingView, Platform, Pressable, Text, View } from 'react-native';
+import { SafeAreaProvider, SafeAreaView } from 'react-native-safe-area-context';
+import { Explore, ShopDetails } from './directory';
+import { Account, Merchant, Orders } from './flows';
+import { Icon, colors, styles as S } from './ui';
 import * as SecureStore from 'expo-secure-store';
 import * as DocumentPicker from 'expo-document-picker';
 import * as FileSystem from 'expo-file-system/legacy';
@@ -10,7 +14,13 @@ import { StatusBar as ExpoStatusBar } from 'expo-status-bar';
 
 WebBrowser.maybeCompleteAuthSession();
 const API = process.env.EXPO_PUBLIC_API_URL || 'https://campus-vendors-mobile-api.onrender.com';
-const C = { orange:'#e2672b', green:'#16302a', cream:'#f5f0e6', card:'#fffdf9', muted:'#6c7a73', line:'#e9e2d6', pale:'#f8eee2', white:'#fff' };
+const HERO_IMAGE = require('./assets/campus-food.jpg');
+const TABS = [
+  { label: 'Explore', icon: 'compass' },
+  { label: 'Orders', icon: 'receipt' },
+  { label: 'Shop', icon: 'storefront' },
+  { label: 'Account', icon: 'person' },
+];
 const money = n => `₹${Math.round(Number(n)||0)}`;
 const normalize = x => (Array.isArray(x) ? x : []).map(v => ({...v, id:v.id || v._id}));
 const storage = {
@@ -20,33 +30,108 @@ const storage = {
 };
 
 export default function App() {
+  return (
+    <SafeAreaProvider style={S.safe}>
+      <CampusVendors />
+    </SafeAreaProvider>
+  );
+}
+
+function CampusVendors() {
   const [token,setToken]=useState(null), [me,setMe]=useState(null), [shops,setShops]=useState([]), [orders,setOrders]=useState([]), [cart,setCart]=useState([]), [tab,setTab]=useState('Explore');
-  const [busy,setBusy]=useState(true), [error,setError]=useState(''), [authView,setAuthView]=useState('login'), [codeSent,setCodeSent]=useState(false), [devCode,setDevCode]=useState(''), [pending,setPending]=useState('');
+  const [busy,setBusy]=useState(false), [error,setError]=useState(''), [authView,setAuthView]=useState('login'), [codeSent,setCodeSent]=useState(false), [devCode,setDevCode]=useState(''), [pending,setPending]=useState('');
   const [email,setEmail]=useState(''), [code,setCode]=useState(''), [name,setName]=useState(''), [cls,setCls]=useState(''), [phone,setPhone]=useState(''), [query,setQuery]=useState(''), [category,setCategory]=useState('All'), [selected,setSelected]=useState(null), [vendorToken,setVendorToken]=useState(null), [vendor,setVendor]=useState(null), [vendorOrders,setVendorOrders]=useState([]);
-  const [form,setForm]=useState({}), [itemName,setItemName]=useState(''), [itemPrice,setItemPrice]=useState(''), [shopNote,setShopNote]=useState(''), [printFile,setPrintFile]=useState(null), [printPages,setPrintPages]=useState('1'), [printCopies,setPrintCopies]=useState('1'), [feedbackMessage,setFeedbackMessage]=useState('');
-  const googleEnabled=!!(process.env.EXPO_PUBLIC_GOOGLE_ANDROID_CLIENT_ID||process.env.EXPO_PUBLIC_GOOGLE_IOS_CLIENT_ID||process.env.EXPO_PUBLIC_GOOGLE_WEB_CLIENT_ID);
+  const [form,setForm]=useState({}), [itemName,setItemName]=useState(''), [itemPrice,setItemPrice]=useState(''), [shopNote,setShopNote]=useState(null), [printFile,setPrintFile]=useState(null), [printPages,setPrintPages]=useState('1'), [printCopies,setPrintCopies]=useState('1'), [feedbackMessage,setFeedbackMessage]=useState('');
+  const [loadingDirectory, setLoadingDirectory] = useState(true);
+  const [directoryError, setDirectoryError] = useState('');
+  const googleEnabled = !!Platform.select({
+    android: process.env.EXPO_PUBLIC_GOOGLE_ANDROID_CLIENT_ID,
+    ios: process.env.EXPO_PUBLIC_GOOGLE_IOS_CLIENT_ID,
+    web: process.env.EXPO_PUBLIC_GOOGLE_WEB_CLIENT_ID,
+  });
   const [googleRequest,googleResponse,promptGoogle]=Google.useAuthRequest({androidClientId:process.env.EXPO_PUBLIC_GOOGLE_ANDROID_CLIENT_ID||'preview-disabled.apps.googleusercontent.com',iosClientId:process.env.EXPO_PUBLIC_GOOGLE_IOS_CLIENT_ID||'preview-disabled.apps.googleusercontent.com',webClientId:process.env.EXPO_PUBLIC_GOOGLE_WEB_CLIENT_ID||'preview-disabled.apps.googleusercontent.com',responseType:'id_token',scopes:['openid','profile','email']});
   const request=useCallback(async(path,method='GET',body=null,auth=token,shopToken=vendorToken)=>{
     const headers={'content-type':'application/json'}; if(auth) headers.authorization=`Bearer ${auth}`; if(shopToken)headers['x-vendor-token']=shopToken;
     let response; try { response=await fetch(`${API}${path}`,{method,headers,...(body?{body:JSON.stringify(body)}:{})}); } catch { throw new Error('Network unavailable. Check your connection and try again.'); }
     const data=await response.json().catch(()=>({})); if(!response.ok)throw new Error(data.error||'Request failed.'); return data;
   },[token,vendorToken]);
-  const refresh=useCallback(async(t=token)=>{ if(!t)return; const data=await request('/api/sync','GET',null,t); setShops(normalize(data.vendors)); setMe(data.me||null);setOrders(normalize(data.myOrders)); },[request,token]);
-  useEffect(()=>{(async()=>{const t=await storage.get('student-token');const vt=await storage.get('vendor-token');if(t)setToken(t);if(vt)setVendorToken(vt); try{const data=await request('/api/sync','GET',null,t,vt);setShops(normalize(data.vendors));setMe(data.me||null);setOrders(normalize(data.myOrders));if(vt&&data.vendorId){setVendor({id:data.vendorId});setVendorOrders(normalize(data.vendorOrders));}}catch(e){setError(e.message)}setBusy(false)})()},[]);
+  const sync = useCallback(async (studentToken, merchantToken) => {
+    const data = await request('/api/sync', 'GET', null, studentToken, merchantToken);
+    const nextShops = normalize(data.vendors);
+    setShops(nextShops);
+    setMe(data.me || null);
+    setOrders(normalize(data.myOrders));
+    if (merchantToken && data.vendorId) {
+      setVendor(nextShops.find(shop => shop.id === data.vendorId) || { id: data.vendorId });
+      setVendorOrders(normalize(data.vendorOrders));
+    }
+  }, [request]);
+
+  const refresh = (studentToken = token) => sync(studentToken, vendorToken);
+  async function refreshDirectory() {
+    setLoadingDirectory(true);
+    setDirectoryError('');
+    try {
+      await refresh();
+    } catch (err) {
+      setDirectoryError(err.message);
+    } finally {
+      setLoadingDirectory(false);
+    }
+  }
+
+  useEffect(() => {
+    async function load() {
+      try {
+        const [savedStudent, savedMerchant] = await Promise.all([
+          storage.get('student-token'),
+          storage.get('vendor-token'),
+        ]);
+        setToken(savedStudent);
+        setVendorToken(savedMerchant);
+        await sync(savedStudent, savedMerchant);
+      } catch (err) {
+        setDirectoryError(err.message);
+      } finally {
+        setLoadingDirectory(false);
+      }
+    }
+    load();
+  }, []);
+
   useEffect(()=>{if(googleResponse?.type==='success'){const idToken=googleResponse.authentication?.idToken||googleResponse.params?.id_token;if(idToken)completeGoogle(idToken);else setError('Google did not return a verified ID token.')}} ,[googleResponse]);
   const categories=useMemo(()=>['All',...new Set(shops.map(s=>s.category).filter(Boolean))],[shops]);
-  const visible=shops.filter(s=>(category==='All'||s.category===category)&&`${s.name} ${s.category} ${s.location}`.toLowerCase().includes(query.toLowerCase()));
+  const search = query.trim().toLowerCase();
+  const visible = shops.filter(shop => {
+    if (category !== 'All' && shop.category !== category) return false;
+    const menuNames = (shop.menu || []).map(item => item.name);
+    return [shop.name, shop.category, shop.location, ...menuNames]
+      .some(value => String(value || '').toLowerCase().includes(search));
+  });
+  const selectedCart = cart.filter(item => item.vendorId === selected?.id);
+
+  function changeQuantity(item, delta) {
+    setCart(previous => {
+      const matches = entry => entry.id === item.id && entry.vendorId === selected.id;
+      const existing = previous.find(matches);
+      if (!existing) return [...previous, { ...item, vendorId: selected.id, qty: 1 }];
+      const qty = Math.max(0, Math.min(50, existing.qty + delta));
+      return qty
+        ? previous.map(entry => matches(entry) ? { ...entry, qty } : entry)
+        : previous.filter(entry => !matches(entry));
+    });
+  }
   async function sendCode(){try{setBusy(true);const d=await request('/api/auth/send-code','POST',{email:email.trim().toLowerCase(),...(authView==='signup'?{details:{name,cls,phone}}:{})},null);setDevCode(d.devCode||'');setCodeSent(true);setError('');}catch(e){setError(e.message)}finally{setBusy(false)}}
   async function verifyCode(){try{setBusy(true);const d=await request('/api/mobile/auth/verify','POST',{email:email.trim().toLowerCase(),code},null);if(d.needsProfile){setPending(d.pendingToken);setError('Add your name, class and mobile number to finish creating your account.');return}await finishLogin(d.token,d.student)}catch(e){setError(e.message)}finally{setBusy(false)}}
   async function finishProfile(){try{setBusy(true);const d=await request('/api/mobile/auth/finish','POST',{pendingToken:pending,name,cls,phone},null);await finishLogin(d.token,d.student)}catch(e){setError(e.message)}finally{setBusy(false)}}
   async function completeGoogle(idToken){try{setBusy(true);const d=await request('/api/mobile/auth/google','POST',{idToken},null);if(d.needsProfile){setPending(d.pendingToken);setEmail(d.email);setError('Finish your profile to continue.');return}await finishLogin(d.token,d.student)}catch(e){setError(e.message)}finally{setBusy(false)}}
   async function finishLogin(t,student){await storage.set('student-token',t);setToken(t);setMe(student);setAuthView('login');setCodeSent(false);setPending('');setError('');await refresh(t)}
   async function logout(){try{await request('/api/auth/logout','POST',{},token)}catch{}await storage.remove('student-token');setToken(null);setMe(null);setOrders([]);setTab('Explore')}
-  async function placeOrder(){if(!token){setTab('Account');setError('Sign in with your email code to place an order.');return}const items=cart.filter(x=>x.vendorId===selected.id);try{const d=await request('/api/mobile/orders','POST',{vendorId:selected.id,items:items.map(x=>({id:x.id,qty:x.qty})),pickup:'ASAP',note:''});setCart([]);setSelected(null);await refresh();Alert.alert('Order placed',`Your pickup token is ${d.order.token}. Total: ${money(d.order.total)}${d.order.warningFee?` (includes ${d.order.warningFee.percent}% warning fee for the shop)`:''}`)}catch(e){Alert.alert('Could not place order',e.message)}}
+  async function placeOrder(){if(!token){goTo('Account');setError('Sign in with your email code to place an order.');return}const items=selectedCart;try{const d=await request('/api/mobile/orders','POST',{vendorId:selected.id,items:items.map(x=>({id:x.id,qty:x.qty})),pickup:'ASAP',note:''});setCart(previous=>previous.filter(item=>item.vendorId!==selected.id));setSelected(null);await refresh();Alert.alert('Order placed',`Your pickup token is ${d.order.token}. Total: ${money(d.order.total)}${d.order.warningFee?` (includes ${d.order.warningFee.percent}% warning fee for the shop)`:''}`)}catch(e){Alert.alert('Could not place order',e.message)}}
   async function pickPrintFile(){try{const r=await DocumentPicker.getDocumentAsync({type:'application/pdf',copyToCacheDirectory:true});if(!r.canceled)setPrintFile(r.assets[0])}catch(e){Alert.alert('File picker unavailable',e.message)}}
-  async function submitPrint(){if(!token){setTab('Account');return}if(!printFile)return Alert.alert('Choose a PDF','Select the document you want printed.');try{const base64=await FileSystem.readAsStringAsync(printFile.uri,{encoding:FileSystem.EncodingType.Base64});const d=await request('/api/mobile/orders','POST',{vendorId:selected.id,type:'print',pickup:'ASAP',print:{pages:Number(printPages)||1,copies:Number(printCopies)||1,color:'bw',sides:'single',binding:'none',fileName:printFile.name,size:printFile.size||0},file:`data:application/pdf;base64,${base64}`});setPrintFile(null);setSelected(null);await refresh();Alert.alert('Print job placed',`Pickup token ${d.order.token} · ${money(d.order.total)}`)}catch(e){Alert.alert('Could not place print job',e.message)}}
+  async function submitPrint(){if(!token){goTo('Account');setError('Sign in with your email code to submit a print job.');return}if(!printFile)return Alert.alert('Choose a PDF','Select the document you want printed.');try{const base64=await FileSystem.readAsStringAsync(printFile.uri,{encoding:FileSystem.EncodingType.Base64});const d=await request('/api/mobile/orders','POST',{vendorId:selected.id,type:'print',pickup:'ASAP',print:{pages:Number(printPages)||1,copies:Number(printCopies)||1,color:'bw',sides:'single',binding:'none',fileName:printFile.name,size:printFile.size||0},file:`data:application/pdf;base64,${base64}`});setPrintFile(null);setSelected(null);await refresh();Alert.alert('Print job placed',`Pickup token ${d.order.token} · ${money(d.order.total)}`)}catch(e){Alert.alert('Could not place print job',e.message)}}
   async function cancelOrder(o){Alert.alert('Cancel this order?', 'Repeated cancellations create warnings. Three warnings block ordering. Continue?', [{text:'Keep order',style:'cancel'},{text:'Cancel order',style:'destructive',onPress:async()=>{try{const d=await request(`/api/mobile/orders/${o.id}/cancel`,'PUT',{});await refresh();Alert.alert('Order cancelled',d.strike?.blocked?'Your account has been banned after three warnings.':`Warning ${d.strike?.strikes||''} recorded.`)}catch(e){Alert.alert('Could not cancel',e.message)}}}])}
-  async function vendorLogin(){try{setBusy(true);const d=await request('/api/vendor/login','POST',{shop:form.shop,pincode:form.pincode,phone:form.phone},null,null);await storage.set('vendor-token',d.token);setVendorToken(d.token);setVendor({id:d.vendorId});const sync=await request('/api/sync','GET',null,token,d.token);setVendorOrders(normalize(sync.vendorOrders));setError('')}catch(e){setError(e.message)}finally{setBusy(false)}}
+  async function vendorLogin(credentials){try{setBusy(true);const d=await request('/api/vendor/login','POST',credentials,null,null);await storage.set('vendor-token',d.token);setVendorToken(d.token);await sync(token,d.token);setError('')}catch(e){setError(e.message)}finally{setBusy(false)}}
   async function vendorRefresh(){try{const d=await request('/api/sync');setShops(normalize(d.vendors));setVendorOrders(normalize(d.vendorOrders));setVendor(d.vendors?.find(x=>x.id===d.vendorId)||vendor)}catch(e){setError(e.message)}}
   async function downloadPrint(o){try{const d=await request(`/api/vendor/files/${o.id}`);const b64=d.dataUrl.split(',')[1];const path=`${FileSystem.cacheDirectory}${o.print?.fileName||'print-job.pdf'}`;await FileSystem.writeAsStringAsync(path,b64,{encoding:FileSystem.EncodingType.Base64});if(await Sharing.isAvailableAsync())await Sharing.shareAsync(path,{mimeType:'application/pdf'});else Alert.alert('Print file saved',path)}catch(e){Alert.alert('Could not download print file',e.message)}}
   async function updateShop(patch){try{const d=await request('/api/vendor/me','PUT',patch);setVendor(d.vendor);setShops(await (async()=>normalize((await request('/api/sync')).vendors))())}catch(e){Alert.alert('Could not save shop',e.message)}}
@@ -54,19 +139,125 @@ export default function App() {
   async function rateOrder(o,stars){try{await request(`/api/orders/${o.id}/rate`,'POST',{stars,comment:''});await refresh();Alert.alert('Thanks for rating',`Your ${stars}-star rating was saved.`)}catch(e){Alert.alert('Could not rate order',e.message)}}
   async function sendFeedback(){try{await request('/api/feedback','POST',{type:'feedback',message:feedbackMessage});setFeedbackMessage('');Alert.alert('Feedback sent','Thank you for helping improve Campus Vendors.')}catch(e){Alert.alert('Could not send feedback',e.message)}}
   async function applyShop(){try{setBusy(true);const d=await request('/api/mobile/vendor-applications','POST',form,null,null);Alert.alert('Application received',d.reviewEmailSent?'The review email was sent. Your shop will appear after approval.':`Saved, but the review email could not be sent. Ask the app operator to check ADMIN_EMAIL and Brevo settings. ${d.ownerEmailSent?'A receipt was emailed to the owner.':''}`);setTab('Account')}catch(e){Alert.alert('Application failed',e.message)}finally{setBusy(false)}}
-  const field=(label,key,opts={})=><TextInput key={key} placeholder={label} placeholderTextColor="#8b9690" value={String(form[key]??'')} onChangeText={v=>setForm(x=>({...x,[key]:v}))} style={S.input} keyboardType={opts.keyboard} secureTextEntry={opts.secure} autoCapitalize={opts.cap||'sentences'}/>;
-  const button=(label,onPress,kind='primary',disabled=false)=><TouchableOpacity key={label} disabled={disabled} style={[S.button,kind==='secondary'&&S.buttonSecondary,kind==='danger'&&S.buttonDanger,disabled&&{opacity:.55}]} onPress={onPress}><Text style={[S.buttonText,kind==='secondary'&&S.buttonSecondaryText]}>{label}</Text></TouchableOpacity>;
-  function goAccount(){setTab('Account');setSelected(null)}
-  if(busy&&!shops.length)return <SafeAreaView style={S.safe}><ActivityIndicator color={C.orange} style={{flex:1}}/></SafeAreaView>;
-  return <SafeAreaView style={S.safe}><ExpoStatusBar style="dark" backgroundColor={C.cream}/>
-    <View style={S.header}><View style={S.brandLine}><View style={S.logo}><Text style={S.logoText}>CV</Text></View><Text style={S.brand}>CAMPUS VENDORS</Text><Text style={S.campus}>RVCE</Text></View><Text style={S.heading}>{selected?selected.name:tab==='Explore'?'Find your campus spot':tab==='Orders'?'Your orders':tab==='Shop'?'Shop dashboard':'Your account'}</Text><Text style={S.subtitle}>{selected?`${selected.category||'Shop'} · ${selected.location||'Near campus'}`:'Good food, quick prints, right around campus.'}</Text></View>
-    {selected?<ScrollView contentContainerStyle={S.content}><TouchableOpacity onPress={()=>setSelected(null)}><Text style={S.back}>‹  All campus spots</Text></TouchableOpacity><View style={S.detailHero}><Text style={{fontSize:42}}>{selected.emoji||'🏪'}</Text><View style={{flex:1}}><Text style={S.shopTitle}>{selected.name}</Text><Text style={S.muted}>{selected.location}</Text></View><Badge status={selected.status}/></View><Text style={S.section}>Menu</Text>{(selected.menu||[]).map((m,i)=><View key={m.id||i} style={S.row}><View style={{flex:1}}><Text style={S.rowTitle}>{m.name}</Text><Text style={S.muted}>{money(m.price)} {m.inStock===false?'· Sold out':''}</Text></View><TouchableOpacity disabled={m.inStock===false} onPress={()=>setCart(c=>{const x=c.find(a=>a.id===m.id);return x?c.map(a=>a.id===m.id?{...a,qty:a.qty+1}:a):[...c,{...m,qty:1,vendorId:selected.id}]})} style={S.add}><Text style={{color:C.orange,fontWeight:'800'}}>Add +</Text></TouchableOpacity></View>)}{!selected.menu?.length&&<Text style={S.muted}>Menu is not listed yet. Call or visit the shop for today’s options.</Text>}{selected.print&&<View style={S.cardBlock}><Text style={S.section}>Print a PDF</Text>{button(printFile?`Selected: ${printFile.name}`:'Choose PDF',pickPrintFile,'secondary')}<TextInput placeholder="Pages" keyboardType="number-pad" value={printPages} onChangeText={setPrintPages} style={S.input}/><TextInput placeholder="Copies" keyboardType="number-pad" value={printCopies} onChangeText={setPrintCopies} style={S.input}/><Text style={S.muted}>B/W · single-sided · estimate {money((Number(printPages)||1)*(Number(printCopies)||1)*(selected.print.bw||0))}</Text>{button('Submit print job',submitPrint)}</View>}<View style={S.row}><Text style={S.muted}>Queue</Text><Text style={S.rowTitle}>{selected.queue||0} waiting · ~{selected.avgServe||2} min</Text></View>{cart.filter(x=>x.vendorId===selected.id).length>0&&<>{cart.filter(x=>x.vendorId===selected.id).map(x=><View style={S.row} key={x.id}><Text style={S.rowTitle}>{x.qty} × {x.name}</Text><View style={{flexDirection:'row',gap:12}}><TouchableOpacity onPress={()=>setCart(c=>c.map(a=>a.id===x.id?{...a,qty:Math.max(0,a.qty-1)}:a).filter(a=>a.qty>0))}><Text style={S.link}>−</Text></TouchableOpacity><Text style={S.rowTitle}>{money(x.price*x.qty)}</Text><TouchableOpacity onPress={()=>setCart(c=>c.map(a=>a.id===x.id?{...a,qty:a.qty+1}:a))}><Text style={S.link}>+</Text></TouchableOpacity></View></View>)}{me?.warningFeePercent>0&&<Text style={S.muted}>Next-order warning fee: {me.warningFeePercent}% (paid to the shop).</Text>}{button(`Place order · ${money(cart.filter(x=>x.vendorId===selected.id).reduce((s,x)=>s+x.price*x.qty,0))}`,placeOrder)}</>}</ScrollView>
-    :tab==='Explore'?<View style={S.content}><TextInput placeholder="Search shops, food, print…" value={query} onChangeText={setQuery} style={S.search}/><ScrollView horizontal showsHorizontalScrollIndicator={false} style={{maxHeight:48,marginVertical:10}}>{categories.map(c=><TouchableOpacity key={c} onPress={()=>setCategory(c)} style={[S.chip,category===c&&S.chipOn]}><Text style={[S.chipText,category===c&&S.chipTextOn]}>{c}</Text></TouchableOpacity>)}</ScrollView><FlatList data={visible} keyExtractor={(x,i)=>x.id||String(i)} refreshing={busy} onRefresh={refresh} contentContainerStyle={{paddingBottom:15}} renderItem={({item})=><TouchableOpacity style={S.card} onPress={()=>setSelected(item)}><View style={S.emoji}><Text style={{fontSize:24}}>{item.emoji||'🏪'}</Text></View><View style={{flex:1}}><View style={S.cardTop}><Text style={S.shopName}>{item.name}</Text><Badge status={item.status}/></View><Text style={S.muted}>{item.category} · {item.location}</Text><Text style={S.small}>⏱ {item.avgServe||2} min wait · {item.queue||0} in queue</Text></View><Text style={S.arrow}>›</Text></TouchableOpacity>}/></View>
-    :tab==='Orders'?<ScrollView contentContainerStyle={S.content}>{!token?<View style={S.empty}><Text style={S.emptyTitle}>Sign in to see your orders</Text>{button('Sign in',goAccount)}</View>:orders.map(o=><View key={o.id} style={S.cardBlock}><View style={S.cardTop}><Text style={S.shopName}>Pickup {o.token}</Text><Badge status={o.status}/></View><Text style={S.muted}>{o.items?.map(i=>`${i.qty} × ${i.name}`).join(', ')}</Text><Text style={S.rowTitle}>{money(o.total)}</Text>{o.status==='placed'&&button('Cancel order',()=>cancelOrder(o),'danger')}{o.status==='collected'&&!o.rating&&<View style={S.row}><Text style={S.muted}>Rate your order</Text><View style={{flexDirection:'row',gap:7}}>{[1,2,3,4,5].map(star=><TouchableOpacity key={star} onPress={()=>rateOrder(o,star)}><Text style={{color:C.orange,fontWeight:'800'}}>{star}★</Text></TouchableOpacity>)}</View></View>}</View>)}</ScrollView>
-    :tab==='Shop'?<ScrollView contentContainerStyle={S.content}>{vendor? <><Text style={S.section}>Shop status</Text>{['open','busy','closed'].map(v=>button(v[0].toUpperCase()+v.slice(1),()=>updateShop({status:v}),vendor.status===v?'primary':'secondary'))}<Text style={S.section}>Queue & notice</Text><View style={S.row}><Text style={S.rowTitle}>People waiting · {vendor.queue||0}</Text><View style={{flexDirection:'row',gap:15}}><TouchableOpacity onPress={()=>updateShop({queue:Math.max(0,(vendor.queue||0)-1)})}><Text style={S.link}>−</Text></TouchableOpacity><TouchableOpacity onPress={()=>updateShop({queue:Math.min(200,(vendor.queue||0)+1)})}><Text style={S.link}>+</Text></TouchableOpacity></View></View><TextInput placeholder="Short announcement for students" value={shopNote||vendor.note||''} onChangeText={setShopNote} style={S.input}/>{button('Save announcement',()=>updateShop({note:shopNote}))}<Text style={S.section}>Menu</Text>{(vendor.menu||[]).map((m,i)=><View style={S.row} key={m.id||i}><Text style={S.rowTitle}>{m.name} · {money(m.price)}</Text><Switch value={m.inStock!==false} onValueChange={v=>updateShop({menu:vendor.menu.map(x=>x.id===m.id?{...x,inStock:v}:x)})} trackColor={{true:C.orange}}/></View>)}<View style={S.cardBlock}><TextInput placeholder="New item name" value={itemName} onChangeText={setItemName} style={S.input}/><TextInput placeholder="Price in rupees" value={itemPrice} onChangeText={setItemPrice} keyboardType="decimal-pad" style={S.input}/>{button('Add menu item',()=>{if(!itemName.trim()||!Number(itemPrice))return Alert.alert('Check item','Enter a name and price.');const menu=[...(vendor.menu||[]),{id:`m${Date.now()}`,name:itemName.trim(),price:Number(itemPrice),inStock:true,cat:'Menu'}];updateShop({menu});setItemName('');setItemPrice('')})}</View><Text style={S.section}>Orders</Text>{vendorOrders.map(o=><View style={S.cardBlock} key={o.id}><Text style={S.shopName}>{o.token} · {o.status}</Text><Text style={S.muted}>{o.student?.name} · {o.items?.map(i=>i.name).join(', ')}</Text><Text style={S.rowTitle}>Collect {money(o.total)}{o.warningFee?` · includes ${o.warningFee.percent}% merchant bonus`:''}</Text>{o.type==='print'&&o.print?.hasFile&&button('Download PDF',()=>downloadPrint(o),'secondary')}{(o.status==='placed'?['accepted','rejected']:o.status==='accepted'?['ready']:o.status==='ready'?['collected','no_show']:[]).map(s=>button(s.replace('_',' '),()=>updateOrder(o,s),s==='rejected'||s==='no_show'?'danger':'secondary'))}</View>)}{button('Sign out of shop',async()=>{await storage.remove('vendor-token');setVendorToken(null);setVendor(null) },'secondary')}</>:<><Text style={S.section}>Merchant sign in</Text>{field('Shop name','shop')}{field('6-digit shop PIN','pincode',{keyboard:'number-pad'})}{field('Shop phone','phone',{keyboard:'phone-pad'})}{button('Sign in to shop',vendorLogin)}<Text style={S.section}>Register a new shop</Text><Text style={S.muted}>Submit your shop details for email review. A shop only appears after approval.</Text>{['name','category','location','phone','pincode','ownerEmail'].map(k=>field(k[0].toUpperCase()+k.slice(1),k))}{field('Opening time, e.g. 08:00','openTime')}{field('Closing time, e.g. 20:00','closeTime')}<View style={S.row}><Text style={S.rowTitle}>This shop offers printing</Text><Switch value={!!form.printShop} onValueChange={v=>setForm(x=>({...x,printShop:v}))} trackColor={{true:C.orange}}/></View>{form.printShop&&<>{field('B/W price per page','printBw',{keyboard:'decimal-pad'})}{field('Colour price per page','printColor',{keyboard:'decimal-pad'})}{field('Binding price','printBinding',{keyboard:'decimal-pad'})}</>}{button('Send shop application for approval',applyShop)}</>}</ScrollView>
-    :<ScrollView contentContainerStyle={S.content}>{token? <><Text style={S.section}>Student account</Text><View style={S.cardBlock}><Text style={S.shopName}>{me?.name||'Student'}</Text><Text style={S.muted}>{me?.email}</Text><Text style={S.muted}>{me?.cls} · {me?.phone}</Text><Text style={S.muted}>Warnings: {me?.strikes||0}</Text></View><TextInput placeholder="Share feedback with the team" multiline value={feedbackMessage} onChangeText={setFeedbackMessage} style={[S.input,{height:80,paddingTop:12}]}/>{button('Send feedback',sendFeedback,'secondary',feedbackMessage.trim().length<5)}{button('Sign out',logout,'secondary')}</>:<><Text style={S.section}>{pending?'Finish your profile':authView==='signup'?'Create account':'Sign in with email OTP'}</Text>{pending||authView==='signup'?<>{!pending&&<TextInput placeholder="Full name" value={name} onChangeText={setName} style={S.input}/>}<TextInput placeholder="Class / department" value={cls} onChangeText={setCls} style={S.input}/><TextInput placeholder="10-digit mobile number" keyboardType="phone-pad" value={phone} onChangeText={setPhone} style={S.input}/></>:null}{!pending&&<TextInput placeholder="Gmail address" autoCapitalize="none" keyboardType="email-address" value={email} onChangeText={setEmail} style={S.input}/>}{!pending&&codeSent&&<><TextInput placeholder="6-digit code" keyboardType="number-pad" value={code} onChangeText={setCode} style={S.input}/>{devCode? <Text style={S.muted}>Local development code: {devCode}</Text>:null}</>}{pending?button('Save profile',finishProfile):!codeSent?button('Email me a sign-in code',sendCode):button('Verify code',verifyCode)}{!pending&&authView==='login'&&button('Continue with Google',()=>googleEnabled&&googleRequest?promptGoogle():setError('Configure Google OAuth client IDs to enable this sign-in option.'),'secondary',!googleEnabled||!googleRequest)}{error?<Text style={S.error}>{error}</Text>:null}<TouchableOpacity onPress={()=>{setAuthView(authView==='signup'?'login':'signup');setCodeSent(false);setError('')}}><Text style={S.link}>{authView==='signup'?'Already registered? Sign in':'New student? Create an account'}</Text></TouchableOpacity><Text style={S.muted}>Sign-in IP is used for account security. Shared campus Wi-Fi may identify different users as using the same IP.</Text></>}</ScrollView>}
-    <View style={S.nav}>{[['Explore','⌕'],['Orders','▣'],['Shop','⌂'],['Account','●']].map(([t,icon])=><TouchableOpacity key={t} style={S.navItem} onPress={()=>{setTab(t);setSelected(null);setError('')}}><Text style={[S.navIcon,tab===t&&{color:C.orange}]}>{icon}</Text><Text style={[S.navText,tab===t&&{color:C.green,fontWeight:'700'}]}>{t}</Text></TouchableOpacity>)}</View>
-  </SafeAreaView>;
+  function goTo(nextTab) {
+    setTab(nextTab);
+    setSelected(null);
+    setError('');
+  }
+
+  function openShop(shop) {
+    setSelected(shop);
+    setPrintFile(null);
+    setPrintPages('1');
+    setPrintCopies('1');
+  }
+
+  function editEmail() {
+    setCodeSent(false);
+    setCode('');
+    setDevCode('');
+    setError('');
+  }
+
+  function toggleAuthView() {
+    setAuthView(previous => previous === 'signup' ? 'login' : 'signup');
+    editEmail();
+  }
+
+  function addItem() {
+    const price = Number(itemPrice);
+    if (!itemName.trim() || !Number.isFinite(price) || price <= 0) {
+      Alert.alert('Check item', 'Enter a name and a price above zero.');
+      return;
+    }
+    const item = { id: `m${Date.now()}`, name: itemName.trim(), price, inStock: true, cat: 'Menu' };
+    updateShop({ menu: [...(vendor.menu || []), item] });
+    setItemName('');
+    setItemPrice('');
+  }
+
+  async function signOutOfShop() {
+    await storage.remove('vendor-token');
+    setVendorToken(null);
+    setVendor(null);
+    setVendorOrders([]);
+    setShopNote(null);
+  }
+
+  return (
+    <SafeAreaView style={S.safe}>
+      <ExpoStatusBar style="dark" />
+      <KeyboardAvoidingView style={S.frame} behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
+        <View style={S.header}>
+          {selected ? (
+            <Pressable accessibilityRole="button" accessibilityLabel="Back to directory" onPress={() => setSelected(null)} style={S.back}>
+              <Icon name="arrow-back" size={22} color={colors.forest} />
+            </Pressable>
+          ) : (
+            <View style={S.brandMark}><Text style={S.brandInitials}>CV</Text></View>
+          )}
+          <Text style={S.brandName}>{selected ? 'Directory' : 'Campus Vendors'}</Text>
+          <View style={S.headerEnd}>
+            <Icon name="location-outline" size={16} color={colors.orangeDark} />
+            <Text style={S.brandCampus}>RVCE</Text>
+          </View>
+        </View>
+
+        {selected ? (
+          <ShopDetails
+            shop={selected} cart={selectedCart} changeQuantity={changeQuantity}
+            warningFeePercent={me?.warningFeePercent} placeOrder={placeOrder} money={money}
+            printFile={printFile} printPages={printPages} printCopies={printCopies}
+            setPrintPages={setPrintPages} setPrintCopies={setPrintCopies}
+            pickPrintFile={pickPrintFile} submitPrint={submitPrint}
+          />
+        ) : tab === 'Explore' ? (
+          <Explore
+            shops={shops} visible={visible} category={category} categories={categories}
+            setCategory={setCategory} query={query} setQuery={setQuery}
+            loading={loadingDirectory} error={directoryError} refresh={refreshDirectory}
+            onShopPress={openShop} heroImage={HERO_IMAGE}
+          />
+        ) : tab === 'Orders' ? (
+          <Orders signedIn={!!token} orders={orders} shops={shops} money={money}
+            goAccount={() => goTo('Account')} goExplore={() => goTo('Explore')}
+            cancel={cancelOrder} rate={rateOrder}
+          />
+        ) : tab === 'Shop' ? (
+          <Merchant
+            vendor={vendor} orders={vendorOrders} form={form} setForm={setForm}
+            busy={busy} error={error} signIn={vendorLogin} apply={applyShop}
+            money={money} updateShop={updateShop} shopNote={shopNote} setShopNote={setShopNote}
+            itemName={itemName} setItemName={setItemName} itemPrice={itemPrice} setItemPrice={setItemPrice}
+            addItem={addItem} updateOrder={updateOrder} downloadPrint={downloadPrint} signOut={signOutOfShop}
+          />
+        ) : (
+          <Account
+            me={me} signedIn={!!token} authView={authView} pending={pending}
+            email={email} code={code} name={name} cls={cls} phone={phone}
+            setEmail={setEmail} setCode={setCode} setName={setName} setCls={setCls} setPhone={setPhone}
+            codeSent={codeSent} devCode={devCode} busy={busy} error={error}
+            toggleAuthView={toggleAuthView} editEmail={editEmail}
+            submit={pending ? finishProfile : codeSent ? verifyCode : sendCode}
+            googleSignIn={googleEnabled && googleRequest ? () => promptGoogle() : undefined}
+            feedback={feedbackMessage} setFeedback={setFeedbackMessage} sendFeedback={sendFeedback} logout={logout}
+          />
+        )}
+
+        <View style={S.nav}>
+          {TABS.map(({ label, icon }) => {
+            const active = tab === label;
+            return (
+              <Pressable key={label} accessibilityRole="tab" accessibilityState={{ selected: active }} onPress={() => goTo(label)} style={S.navItem}>
+                <View style={[S.navIcon, active && S.navIconActive]}>
+                  <Icon name={active ? icon : `${icon}-outline`} size={21} color={active ? colors.forest : colors.muted} />
+                </View>
+                <Text style={[S.navText, active && S.navTextActive]}>{label}</Text>
+              </Pressable>
+            );
+          })}
+        </View>
+      </KeyboardAvoidingView>
+    </SafeAreaView>
+  );
 }
-function Badge({status}){const c=status==='open'||status==='ready'||status==='collected'?'#23814f':status==='busy'||status==='accepted'?'#bd741b':'#75817c';return <View style={[S.badge,{backgroundColor:c+'18'}]}><View style={[S.dot,{backgroundColor:c}]}/><Text style={{fontSize:10,fontWeight:'700',color:c,textTransform:'capitalize'}}>{status||'check'}</Text></View>}
-const S=StyleSheet.create({safe:{flex:1,backgroundColor:C.cream,paddingTop:Platform.OS==='android'?(StatusBar.currentHeight||0):0},header:{backgroundColor:C.green,paddingHorizontal:20,paddingTop:8,paddingBottom:19,borderBottomLeftRadius:23,borderBottomRightRadius:23},brandLine:{height:35,flexDirection:'row',alignItems:'center',gap:9},logo:{width:28,height:28,borderRadius:9,backgroundColor:C.orange,alignItems:'center',justifyContent:'center'},logoText:{color:'white',fontWeight:'900',fontSize:12},brand:{color:'#fff',fontSize:11,fontWeight:'900',letterSpacing:1.5},campus:{color:'#b7c3bd',fontSize:11,marginLeft:'auto'},heading:{fontSize:25,fontWeight:'900',color:'#fff',marginTop:13},subtitle:{color:'#c0cbc5',fontSize:12,marginTop:4},content:{flexGrow:1,paddingHorizontal:17,paddingTop:15,paddingBottom:15},search:{height:46,backgroundColor:C.white,borderRadius:13,borderWidth:1,borderColor:C.line,paddingHorizontal:14,color:C.green},chip:{paddingHorizontal:14,paddingVertical:8,borderRadius:22,backgroundColor:C.white,borderWidth:1,borderColor:C.line,marginRight:8,alignSelf:'flex-start'},chipOn:{backgroundColor:C.green,borderColor:C.green},chipText:{color:'#52635c',fontWeight:'600'},chipTextOn:{color:'#fff'},card:{backgroundColor:C.card,borderRadius:15,padding:13,marginBottom:9,borderWidth:1,borderColor:C.line,flexDirection:'row',alignItems:'center',gap:11},emoji:{width:43,height:43,borderRadius:13,backgroundColor:C.pale,alignItems:'center',justifyContent:'center'},cardTop:{flexDirection:'row',alignItems:'center',justifyContent:'space-between',gap:4},shopName:{fontSize:14,fontWeight:'800',color:C.green,flex:1},muted:{color:C.muted,fontSize:12,marginTop:4},small:{color:C.muted,fontSize:11,marginTop:6},arrow:{color:'#99a49e',fontSize:23},badge:{flexDirection:'row',alignItems:'center',gap:4,borderRadius:20,paddingHorizontal:7,paddingVertical:4},dot:{width:6,height:6,borderRadius:3},nav:{height:61,backgroundColor:C.card,borderTopColor:C.line,borderTopWidth:1,flexDirection:'row',justifyContent:'space-around',alignItems:'center'},navItem:{alignItems:'center',gap:1,flex:1},navIcon:{fontSize:20,color:'#84918a'},navText:{fontSize:10,color:'#84918a'},section:{fontWeight:'800',color:C.green,fontSize:16,marginTop:14,marginBottom:9},detailHero:{backgroundColor:C.card,borderRadius:17,padding:15,flexDirection:'row',alignItems:'center',gap:11,borderWidth:1,borderColor:C.line,marginTop:13},shopTitle:{fontSize:18,fontWeight:'800',color:C.green},row:{backgroundColor:C.card,borderRadius:12,padding:13,marginBottom:7,flexDirection:'row',alignItems:'center',justifyContent:'space-between'},rowTitle:{color:C.green,fontWeight:'700',fontSize:13},add:{padding:9},back:{color:C.orange,fontWeight:'700',fontSize:14},button:{backgroundColor:C.orange,borderRadius:12,paddingHorizontal:15,paddingVertical:12,alignItems:'center',marginTop:9},buttonSecondary:{backgroundColor:C.white,borderWidth:1,borderColor:C.line},buttonDanger:{backgroundColor:'#b8432f'},buttonText:{color:'#fff',fontWeight:'800',textTransform:'capitalize'},buttonSecondaryText:{color:C.green},input:{height:47,backgroundColor:C.white,borderRadius:12,borderWidth:1,borderColor:C.line,paddingHorizontal:13,marginBottom:9,color:C.green},cardBlock:{backgroundColor:C.card,borderRadius:15,padding:14,marginBottom:10,borderWidth:1,borderColor:C.line},empty:{flex:1,alignItems:'center',justifyContent:'center',padding:20},emptyTitle:{fontSize:18,fontWeight:'800',color:C.green},error:{color:'#b8432f',marginTop:10,fontSize:13},link:{color:C.orange,fontWeight:'700',marginVertical:13},navSpacer:{height:10}});
